@@ -119,7 +119,7 @@ input schema 定義在 `config.data.inputs`：
   }
 }
 ```
-<img width="200" height="102" src="https://github.com/user-attachments/assets/0f9f1034-acc8-43bb-a850-5f73f2dc3886" />
+<img width="200" height="102" src="./assets/node-input-config.png" />
 
 目前 input handle 只支援 `input1`，schema 應定義在 `input1` 下。
 
@@ -156,7 +156,7 @@ output schema 定義在 `config.data.outputs`：
 
 新增、刪除或改名欄位後，需同步更新 `ctx.Publish(...)` 的呼叫。
 
-<img width="200" height="87" src="https://github.com/user-attachments/assets/a2810bb6-3342-4566-80bb-388a858c48c8" />
+<img width="200" height="87" src="./assets/node-output-config.png" />
 
 ### Settings
 
@@ -322,7 +322,7 @@ SDK 不會替你決定這個優先順序；這是 app 自己的 contract，也�
 - `node`：一個被這個 app 匹配到的 NeoEdgeX 節點設定
 - `handle`：input 或 output port 名稱，例如 `input1`、`output1`
 - `mock mode`：SDK 的本地模擬模式，不需要真實平台就能注入假訊息
-<img width="200" height="61"  src="https://github.com/user-attachments/assets/9f8d53be-ddac-46a8-8314-f3bd0b216eda" />
+<img width="200" height="61"  src="./assets/node-diagram.png" />
 
 ### NodeEnv 與 Message
 
