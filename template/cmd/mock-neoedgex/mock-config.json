@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    {
+      "id": "custom-httpclient-env-node",
+      "data": {
+        "name": "custom-httpclient-env-node",
+        "inputs": {
+          "input1": [
+            {
+              "key": "temperature",
+              "type": "int32",
+              "format": "int32"
+            }
+          ]
+        }
+      }
+    }
+  ], 
+  "mock": {
+    "messageInterval": "1s",
+    "messages": [
+      {
+        "nodeID": "custom-httpclient-env-node",
+        "handle": "input1",
+        "data": {
+          "temperature": { "type": "int32", "format": "int32", "value": "25" }
+        }
+      }
+    ]
+  }
+}

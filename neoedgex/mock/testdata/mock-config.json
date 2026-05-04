@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    {
+      "id": "test-node-1",
+      "type": "app",
+      "data": {
+        "name": "test-node",
+        "description": "A test node for mock mode",
+        "inputs": {
+          "input1": [
+            {"key": "temperature", "type": "number", "format": "double"}
+          ]
+        },
+        "outputs": {
+          "output1": [
+            {"key": "result", "type": "number", "format": "double"}
+          ]
+        },
+        "application": {
+          "key": "test-app",
+          "version": "1.0.0"
+        },
+        "settings": {}
+      }
+    }
+  ],
+  "mock": {
+    "messageInterval": "1s",
+    "messages": [
+      {
+        "nodeID": "test-node-1",
+        "handle": "input1",
+        "data": {
+          "temperature": {"type": "number", "format": "double", "value": "25.5"}
+        }
+      }
+    ]
+  }
+}
