@@ -67,7 +67,7 @@ type ExampleApp struct{}
 
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for range ctx.Messages() {
-		if err := ctx.Publish(map[string]any{
+		if err := ctx.Publish("output1", map[string]any{
 			"hello": "world",
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
@@ -112,8 +112,12 @@ input schema 定義在 `config.data.inputs`：
 {
   "inputs": {
     "input1": [
-      { "key": "temperature", "type": "double", "format": "double" },
-      { "key": "running", "type": "bool", "format": "bool" },
+      { "key": "temperature", "type": "double", "format": "double" }
+    ],
+    "input2": [
+      { "key": "running", "type": "bool", "format": "bool" }
+    ],
+    "input3": [
       { "key": "capturedAt", "type": "string", "format": "datetime" }
     ]
   }
@@ -121,7 +125,7 @@ input schema 定義在 `config.data.inputs`：
 ```
 <img width="200" height="102" src="./assets/node-input-config.png" />
 
-目前 input handle 只支援 `input1`，schema 應定義在 `input1` 下。
+可以同時定義多個 input handle，每個 handle 各自帶獨立的欄位 schema；handler 透過 `msg.Handle` 判斷訊息來自哪一個 input。
 
 input schema 描述 handler 從 `ctx.Messages()` 讀到的欄位。每個欄位包含：
 
@@ -146,11 +150,11 @@ output schema 定義在 `config.data.outputs`：
 }
 ```
 
-目前 output handle 只支援 `output1`，schema 應定義在 `output1` 下。
+可以同時定義多個 output handle，每個 handle 各自帶獨立的欄位 schema；handler 透過 `ctx.Publish(handle, data)` 的第一個引數選擇要送往哪一個 output。
 
-這份 schema 決定 `ctx.Publish(map[string]any{...})` 的驗證與轉換行為：
+這份 schema 決定 `ctx.Publish(handle, map[string]any{...})` 的驗證與轉換行為：
 
-- publish 的 map key 需和 `output1` 定義的 key 一致
+- publish 的 map key 需和該 `handle` 所定義的 key 一致
 - destination `format` 決定可接受哪些 Go 值，以及如何轉換
 - schema 中被省略或為 `nil` 的欄位，SDK 補空欄位（`type=""`、`format=""`、`value=""`）
 
@@ -334,7 +338,7 @@ SDK 不會替你決定這個優先順序；這是 app 自己的 contract，也�
 - `Messages()`：接收進來的 `neoedgex.Message`
 - `Context()`：這個 node 的生命週期 context，用於 HTTP、DB、gRPC、worker loop 等呼叫
 - `Logger()`：node-scoped logger
-- `Publish(data map[string]any)`：送出到 `output1`
+- `Publish(handle string, data map[string]any)`：送出到指定的 output handle
 - `ReportError(code, err)`：回報平台可見的 node error
 - `Stop()`：要求 SDK 停止這個 node，用於 handler 遭遇無法繼續的 fatal error
 
@@ -347,9 +351,9 @@ SDK 不會替你決定這個優先順序；這是 app 自己的 contract，也�
 
 ### 讀取 Input 值
 
-`msg.Data` 已包含 Go 原生值。讀取時需判斷 key 是否存在，以及 value 是否為 `nil`。
+`msg.Data` 已包含 Go 原生值。讀取時需先依 `msg.Handle` 判斷訊息來自哪一個 input，再判斷欄位 key 是否存在，以及 value 是否為 `nil`。
 
-假設收到的 input payload 是：
+假設前述 schema 下，handler 可能依序收到下列三則 input payload：
 
 ```go
 neoedgex.Message{
@@ -358,8 +362,22 @@ neoedgex.Message{
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
 		"temperature": 25.5,
-		"running":     true,
-		"capturedAt":  nil,
+	},
+}
+neoedgex.Message{
+	Handle:    "input2",
+	Source:    "upstream-node",
+	Timestamp: "2026-03-31T09:10:11Z",
+	Data: map[string]any{
+		"running": true,
+	},
+}
+neoedgex.Message{
+	Handle:    "input3",
+	Source:    "upstream-node",
+	Timestamp: "2026-03-31T09:10:11Z",
+	Data: map[string]any{
+		"capturedAt": nil,
 	},
 }
 ```
@@ -369,62 +387,67 @@ neoedgex.Message{
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for msg := range ctx.Messages() {
-		// 範例：只處理 handle 為 input1 的訊息，其他 handle 的訊息不處理。
-		// (目前只有 input1 這個 handle 的訊息)
-		if msg.Handle != "input1" {
+		// 範例：依 msg.Handle 將訊息分派到對應的 input 處理流程
+		switch msg.Handle {
+		case "input1":
+			// 範例：從 input1 的訊息中讀取 temperature 欄位
+			var temperature float64
+			if value, exists := msg.Data["temperature"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema 沒有定義 tag temperature"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature 沒有由上游節點成功輸出"))
+				// 或者選擇給予預設值，取決於實作者
+				continue
+			} else if castedValue, ok := value.(float64); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema 未定義 tag temperature 為 float64"))
+				continue
+			} else {
+				temperature = castedValue
+			}
+			_ = temperature
+			// ...
+
+		case "input2":
+			// 範例：從 input2 的訊息中讀取 running 欄位
+			var running bool
+			if value, exists := msg.Data["running"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema 沒有定義 tag running"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running 沒有由上游節點成功輸出"))
+				continue
+			} else if castedValue, ok := value.(bool); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema 未定義 tag running 為 bool"))
+				continue
+			} else {
+				running = castedValue
+			}
+			_ = running
+			// ...
+
+		case "input3":
+			// 範例：從 input3 的訊息中讀取 capturedAt 欄位
+			var capturedAt time.Time
+			if value, exists := msg.Data["capturedAt"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 沒有定義 tag capturedAt"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt 沒有由上游節點成功輸出"))
+				continue
+			} else if castedValue, ok := value.(time.Time); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag capturedAt 為 datetime"))
+				continue
+			} else {
+				capturedAt = castedValue
+			}
+			_ = capturedAt
+			// ...
+
+		default:
+			// 未在 schema 中定義的 handle，忽略即可
 			continue
 		}
-
-		// 範例：從 input1 的訊息中讀取 temperature 欄位
-		var temperature float64
-		if value, exists := msg.Data["temperature"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 沒有定義 tag temperature"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature 沒有由上游節點成功輸出"))
-			// 或者選擇給予預設值，取決於實作者
-			continue
-		} else if castedValue, ok := value.(float64); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 未定義 tag temperature 為 float64"))
-			continue
-		} else {
-			temperature = castedValue
-		}
-
-		// 範例：從 input1 的訊息中讀取 running 欄位
-		var running bool
-		if value, exists := msg.Data["running"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 沒有定義 tag running"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running 沒有由上游節點成功輸出"))
-			continue
-		} else if castedValue, ok := value.(bool); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 未定義 tag running 為 bool"))
-			continue
-		} else {
-			running = castedValue
-		}
-
-		// 範例：從 input1 的訊息中讀取 capturedAt 欄位
-		var capturedAt time.Time
-		if value, exists := msg.Data["capturedAt"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 沒有定義 tag capturedAt"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt 沒有由上游節點成功輸出"))
-			continue
-		} else if castedValue, ok := value.(time.Time); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema 未定義 tag capturedAt 為 datetime"))
-			continue
-		} else {
-			capturedAt = castedValue
-		}
-
-		_ = temperature
-		_ = running
-		_ = capturedAt
-		// ...
 	}
 }
 ```
@@ -456,10 +479,10 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 `Publish` 的行為：
 
-- 依節點的 `output1` schema 建構 payload
+- 依節點 `handle` 對應的 output schema 建構 payload；`handle` 須已在 `config.data.outputs` 中定義，否則回傳 error
 - schema 中的欄位若未出現在 `data` 裡，SDK 補空欄位
 - 明確提供但值為 `nil` 的欄位，同樣補空欄位
-- `data` 裡不在 `output1` schema 中的 key 一律忽略
+- `data` 裡不在該 output schema 中的 key 一律忽略
 
 缺少 output 欄位時的具體例子：
 
@@ -468,7 +491,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 // - power: type=double, format=double
 // - status: type=string, format=string
 
-_ = ctx.Publish(map[string]any{
+_ = ctx.Publish("output1", map[string]any{
 	"power": 42.0,
 })
 ```
@@ -476,7 +499,7 @@ _ = ctx.Publish(map[string]any{
 SDK 用傳入的值建立 `power`，`status` 因未在 `data` 中出現而補空欄位。明確傳 `status: nil` 結果相同：
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"power": 42.0,
 	"status": nil,
 })
@@ -487,7 +510,7 @@ if err != nil {
 
 ### Go 值轉換
 
-`ctx.Publish` 的轉換行為由 `output1` 定義的 destination format 決定。
+`ctx.Publish` 的轉換行為由傳入 handle 對應 schema 的 destination format 決定。
 
 <table>
   <thead>
@@ -645,7 +668,7 @@ SDK 依據 Go 值與 schema 的 destination format 決定是否可轉換。
 如果你這樣 publish：
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"enabled": 9527,
 })
 ```
@@ -655,12 +678,12 @@ SDK 套用 `bool` 的 zero / non-zero 規則，`enabled` 轉成 `true`。
 但如果你這樣 publish：
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"enabled": "true",
 })
 ```
 
-`Publish` 不因此回傳 error；SDK 把 `enabled` 設為 empty field，並呼叫 `ReportError` 回報平台。`Publish` 只有在三種情況下才回傳 error：`output1` schema 不存在、JSON 序列化失敗、或 MQTT 發送失敗。型別轉換失敗不會透過回傳值傳遞。
+`Publish` 不因此回傳 error；SDK 把 `enabled` 設為 empty field，並呼叫 `ReportError` 回報平台。`Publish` 只有在三種情況下才回傳 error：指定的 output handle 不存在、JSON 序列化失敗、或 MQTT 發送失敗。型別轉換失敗不會透過回傳值傳遞。
 
 ### Publish 流程
 
@@ -676,12 +699,8 @@ handler 發布 Go 值：
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
-	for msg := range ctx.Messages() {
-		if msg.Handle != "input1" {
-			continue
-		}
-
-		if err := ctx.Publish(map[string]any{
+	for range ctx.Messages() {
+		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
 			"capturedAt":  time.Now(),

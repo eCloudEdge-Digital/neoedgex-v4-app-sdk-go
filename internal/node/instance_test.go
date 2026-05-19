@@ -93,7 +93,7 @@ func TestPublishSkipsOutputValidation(t *testing.T) {
 		Data: contract.NodeData{
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
-				defaultOutputHandle: {
+				"output1": {
 					{Key: "value", Type: contract.TypeString, Format: contract.FormatInt64},
 				},
 			},
@@ -103,7 +103,7 @@ func TestPublishSkipsOutputValidation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := instance.Publish(map[string]any{"value": int64(7)}); err != nil {
+	if err := instance.Publish("output1", map[string]any{"value": int64(7)}); err != nil {
 		t.Fatalf("expected Publish to succeed without output validation, got: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestPublishFillsMissingOutputFieldWithEmptyField(t *testing.T) {
 		Data: contract.NodeData{
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
-				defaultOutputHandle: {
+				"output1": {
 					{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
 					{Key: "status", Type: contract.TypeString, Format: contract.FormatString},
 				},
@@ -148,7 +148,7 @@ func TestPublishFillsMissingOutputFieldWithEmptyField(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := instance.Publish(map[string]any{"value": int64(7)}); err != nil {
+	if err := instance.Publish("output1", map[string]any{"value": int64(7)}); err != nil {
 		t.Fatalf("expected Publish to succeed with missing field, got: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestPublishTreatsNilFieldValueAsEmptyField(t *testing.T) {
 		Data: contract.NodeData{
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
-				defaultOutputHandle: {
+				"output1": {
 					{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
 				},
 			},
@@ -183,7 +183,7 @@ func TestPublishTreatsNilFieldValueAsEmptyField(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := instance.Publish(map[string]any{"value": nil}); err != nil {
+	if err := instance.Publish("output1", map[string]any{"value": nil}); err != nil {
 		t.Fatalf("expected Publish to treat nil as empty field, got: %v", err)
 	}
 
@@ -209,7 +209,7 @@ func TestPublishTreatsMissingAndNilFieldsEquivalently(t *testing.T) {
 			Data: contract.NodeData{
 				Name: "demo-node",
 				Outputs: map[string][]contract.PortFieldSchema{
-					defaultOutputHandle: {
+					"output1": {
 						{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
 						{Key: "status", Type: contract.TypeString, Format: contract.FormatString},
 					},
@@ -223,12 +223,12 @@ func TestPublishTreatsMissingAndNilFieldsEquivalently(t *testing.T) {
 	}
 
 	missingInstance, missingMessenger := instanceWithMessenger()
-	if err := missingInstance.Publish(map[string]any{"value": int64(7)}); err != nil {
+	if err := missingInstance.Publish("output1", map[string]any{"value": int64(7)}); err != nil {
 		t.Fatalf("expected Publish with missing field to succeed, got: %v", err)
 	}
 
 	nilInstance, nilMessenger := instanceWithMessenger()
-	if err := nilInstance.Publish(map[string]any{
+	if err := nilInstance.Publish("output1", map[string]any{
 		"value":  int64(7),
 		"status": nil,
 	}); err != nil {
@@ -468,7 +468,7 @@ func TestPublishWarnsWhenDataContainsTagNotInOutputSchema(t *testing.T) {
 		Data: contract.NodeData{
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
-				defaultOutputHandle: {
+				"output1": {
 					{Key: "value", Type: contract.TypeString, Format: contract.FormatInt64},
 				},
 			},
@@ -478,7 +478,7 @@ func TestPublishWarnsWhenDataContainsTagNotInOutputSchema(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if err := instance.Publish(map[string]any{"value": int64(7), "extra": "x"}); err != nil {
+	if err := instance.Publish("output1", map[string]any{"value": int64(7), "extra": "x"}); err != nil {
 		t.Fatalf("unexpected publish error: %v", err)
 	}
 

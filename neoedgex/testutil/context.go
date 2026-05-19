@@ -35,13 +35,19 @@ type MockNodeEnv struct {
 	cancelCtx   context.CancelFunc
 
 	// PublishedData is appended to each time Publish is called.
-	PublishedData []map[string]any
+	PublishedData []PublishedMessage
 
 	// ReportedErrors is appended to each time ReportError is called.
 	ReportedErrors []ReportedError
 
 	// StopCalled is set to true when Stop() is called.
 	StopCalled bool
+}
+
+// PublishedMessage records a single Publish call's handle and payload.
+type PublishedMessage struct {
+	Handle string
+	Data   map[string]any
 }
 
 // ReportedError holds the arguments passed to a single ReportError call.
@@ -90,9 +96,9 @@ func (m *MockNodeEnv) Logger() contract.Logger {
 	return logger.NewNoopLogger()
 }
 
-func (m *MockNodeEnv) Publish(data map[string]any) error {
+func (m *MockNodeEnv) Publish(handle string, data map[string]any) error {
 	m.mu.Lock()
-	m.PublishedData = append(m.PublishedData, data)
+	m.PublishedData = append(m.PublishedData, PublishedMessage{Handle: handle, Data: data})
 	m.mu.Unlock()
 	return m.PublishErr
 }

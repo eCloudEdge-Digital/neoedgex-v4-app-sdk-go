@@ -67,7 +67,7 @@ type ExampleApp struct{}
 
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for range ctx.Messages() {
-		if err := ctx.Publish(map[string]any{
+		if err := ctx.Publish("output1", map[string]any{
 			"hello": "world",
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
@@ -106,21 +106,25 @@ A Custom App node is configured primarily through the node definition returned b
 
 ### Input Schema
 
-Custom App input handles live under `config.data.inputs`. The most common shape is:
+Custom App input handles live under `config.data.inputs`. A node can declare multiple input handles, each carrying its own field schema:
 
 ```json
 {
   "inputs": {
     "input1": [
-      { "key": "temperature", "type": "double", "format": "double" },
-      { "key": "running", "type": "bool", "format": "bool" },
+      { "key": "temperature", "type": "double", "format": "double" }
+    ],
+    "input2": [
+      { "key": "running", "type": "bool", "format": "bool" }
+    ],
+    "input3": [
       { "key": "capturedAt", "type": "string", "format": "datetime" }
     ]
   }
 }
 ```
 
-Only `input1` is currently supported as an input handle, so `config.data.inputs` should define its schema under `input1` as the single supported entry point.
+The handler uses `msg.Handle` to tell which input the message came from.
 
 Input schema describes which fields your handler expects to read from `ctx.Messages()`. Each field defines:
 
@@ -147,11 +151,11 @@ Custom App output handles live under `config.data.outputs`. The most common shap
 }
 ```
 
-Only `output1` is currently supported as an output handle, so `config.data.outputs` should define its schema under `output1` as the single supported exit point.
+A node can declare multiple output handles, each with its own field schema; the handler selects the destination by passing the handle name as the first argument to `ctx.Publish(handle, data)`.
 
-This schema controls how `ctx.Publish(map[string]any{...})` is validated and converted:
+This schema controls how `ctx.Publish(handle, map[string]any{...})` is validated and converted:
 
-- your published map keys should match the keys defined in `output1`
+- your published map keys should match the keys defined under that `handle`
 - the destination `format` determines which Go values are accepted and how they are converted
 - omitted schema fields are filled with an empty field serialized as `type=""`, `format=""`, and `value=""`
 - explicit `nil` values are also published as empty fields
@@ -348,7 +352,7 @@ Each handler receives a `neoedgex.NodeEnv`.
 - `Messages()` to receive incoming `neoedgex.Message`
 - `Context()` to get the lifecycle context for this node, suitable for HTTP, DB, gRPC, worker loops, and other long-running work
 - `Logger()` to get the SDK-provided node-scoped logger
-- `Publish(data map[string]any)` to emit `output1`
+- `Publish(handle string, data map[string]any)` to emit on the specified output handle
 - `ReportError(code, err)` to report platform-visible node errors
 - `Stop()` to ask the SDK to stop this node, typically after the handler decides it cannot continue because of a fatal error
 
@@ -363,9 +367,9 @@ Each handler receives a `neoedgex.NodeEnv`.
 
 The `msg.Data` you read in the handler already contains native Go values.
 
-You only need to check two things: whether the key exists, and whether the value is `nil`.
+First dispatch on `msg.Handle` to know which input the message came from, then check whether each expected key exists and whether the value is `nil`.
 
-Assume the incoming payload is:
+Assume the handler receives the following three input payloads in sequence:
 
 ```go
 neoedgex.Message{
@@ -374,69 +378,92 @@ neoedgex.Message{
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
 		"temperature": 25.5,
-		"running":     true,
-		"capturedAt":  nil,
+	},
+}
+neoedgex.Message{
+	Handle:    "input2",
+	Source:    "upstream-node",
+	Timestamp: "2026-03-31T09:10:11Z",
+	Data: map[string]any{
+		"running": true,
+	},
+}
+neoedgex.Message{
+	Handle:    "input3",
+	Source:    "upstream-node",
+	Timestamp: "2026-03-31T09:10:11Z",
+	Data: map[string]any{
+		"capturedAt": nil,
 	},
 }
 ```
 
-Inside the handler, read it like this:
+Inside the handler, dispatch and read like this:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for msg := range ctx.Messages() {
-		// Example: only handle messages from input1.
-		if msg.Handle != "input1" {
+		// Example: dispatch on msg.Handle to the matching input branch.
+		switch msg.Handle {
+		case "input1":
+			// Example: read temperature from the input1 message.
+			var temperature float64
+			if value, exists := msg.Data["temperature"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema does not define tag temperature"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature was not successfully produced by the upstream node"))
+				// Or choose to provide a default value instead.
+				continue
+			} else if castedValue, ok := value.(float64); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema does not define tag temperature as float64"))
+				continue
+			} else {
+				temperature = castedValue
+			}
+			_ = temperature
+			// ...
+
+		case "input2":
+			// Example: read running from the input2 message.
+			var running bool
+			if value, exists := msg.Data["running"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema does not define tag running"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running was not successfully produced by the upstream node"))
+				continue
+			} else if castedValue, ok := value.(bool); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema does not define tag running as bool"))
+				continue
+			} else {
+				running = castedValue
+			}
+			_ = running
+			// ...
+
+		case "input3":
+			// Example: read capturedAt from the input3 message.
+			var capturedAt time.Time
+			if value, exists := msg.Data["capturedAt"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt was not successfully produced by the upstream node"))
+				continue
+			} else if castedValue, ok := value.(time.Time); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt as datetime"))
+				continue
+			} else {
+				capturedAt = castedValue
+			}
+			_ = capturedAt
+			// ...
+
+		default:
+			// Handle not defined in the schema: ignore it.
 			continue
 		}
-
-		// Example: read temperature from the input1 message.
-		var temperature float64
-		if value, exists := msg.Data["temperature"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag temperature"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature was not successfully produced by the upstream node"))
-			// Or choose to provide a default value instead.
-			continue
-		} else if castedValue, ok := value.(float64); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag temperature as float64"))
-			continue
-		} else {
-			temperature = castedValue
-		}
-
-		// Example: read running from the input1 message.
-		var running bool
-		if value, exists := msg.Data["running"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag running"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running was not successfully produced by the upstream node"))
-			continue
-		} else if castedValue, ok := value.(bool); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag running as bool"))
-			continue
-		} else {
-			running = castedValue
-		}
-
-		// Example: read capturedAt from the input1 message.
-		var capturedAt time.Time
-		if value, exists := msg.Data["capturedAt"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag capturedAt"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt was not successfully produced by the upstream node"))
-			continue
-		} else if castedValue, ok := value.(time.Time); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input schema does not define tag capturedAt as datetime"))
-			continue
-		} else {
-			capturedAt = castedValue
-		}
-
-		_, _, _ = temperature, running, capturedAt
 	}
 }
 ```
@@ -468,11 +495,11 @@ Treat `msg.Data` with this fixed meaning:
 
 `Publish` currently behaves like this:
 
-- it builds payloads against the node's `output1` schema
+- it builds payloads against the schema defined under the `handle` argument; the handle must exist in `config.data.outputs`, otherwise Publish returns an error
 - if an output field defined in schema is missing from your `data`, the SDK fills it with an empty field
 - if you explicitly provide a field with `nil`, the SDK also turns it into an empty field
-- keys in your `data` map that are not defined in the `output1` schema are silently ignored and will not appear in the published payload
-- `ctx.Publish(map[string]any{...})` accepts ordinary Go values, and the handler also reads ordinary Go values from `msg.Data`
+- keys in your `data` map that are not defined in that output schema are silently ignored and will not appear in the published payload
+- `ctx.Publish(handle, map[string]any{...})` accepts ordinary Go values, and the handler also reads ordinary Go values from `msg.Data`
 
 Concrete example for missing output fields:
 
@@ -481,7 +508,7 @@ Concrete example for missing output fields:
 // - power: type=double, format=double
 // - status: type=string, format=string
 
-_ = ctx.Publish(map[string]any{
+_ = ctx.Publish("output1", map[string]any{
 	"power": 42.0,
 })
 ```
@@ -491,7 +518,7 @@ The SDK publishes `power` from your value and fills `status` with an empty field
 An omitted schema field is not dropped; it is published as an explicit empty field.
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"power": 42.0,
 	"status": nil,
 })
@@ -504,7 +531,7 @@ This means you are explicitly publishing `status` as an empty field. Omitting `s
 
 ### Go Value Conversion
 
-When you publish output fields with `ctx.Publish(map[string]any{...})`, conversion is controlled by the destination format defined in `output1`.
+When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, conversion is controlled by the destination format defined under that handle's schema.
 
 <table>
   <thead>
@@ -662,7 +689,7 @@ For example, assume `output1` schema defines this field:
 If you publish this:
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"enabled": 9527,
 })
 ```
@@ -672,14 +699,14 @@ The SDK applies the `bool` zero / non-zero rule, so `enabled` is converted to `t
 But if you publish this instead:
 
 ```go
-err := ctx.Publish(map[string]any{
+err := ctx.Publish("output1", map[string]any{
 	"enabled": "true",
 })
 ```
 
 The SDK does not return an error. Instead, it silently sets the field to an empty value and internally calls `ReportError` to notify the platform. `Publish` returns `nil`.
 
-`Publish` only returns an error in three cases: the `output1` schema does not exist, JSON marshalling fails, or the MQTT publish fails. Conversion failures are not surfaced through the return value.
+`Publish` only returns an error in three cases: the specified output handle does not exist in the node config, JSON marshalling fails, or the MQTT publish fails. Conversion failures are not surfaced through the return value.
 
 ### Publish Flow
 
@@ -697,12 +724,8 @@ Step 2: the handler can publish ordinary Go values through `ctx.Publish(...)`:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
-	for msg := range ctx.Messages() {
-		if msg.Handle != "input1" {
-			continue
-		}
-
-		if err := ctx.Publish(map[string]any{
+	for range ctx.Messages() {
+		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
 			"capturedAt":  time.Now(),

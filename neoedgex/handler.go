@@ -27,10 +27,10 @@ type NodeEnv interface {
 	// Logger returns the SDK logger for this node, tagged with the node name.
 	Logger() Logger
 
-	// Publish sends output data to downstream nodes via the default output handle.
-	// Values in data are automatically converted to the types declared in
-	// the node configuration — no manual typed payload construction needed.
-	Publish(data map[string]any) error
+	// Publish sends output data to downstream nodes via the specified output handle.
+	// The handle must be defined in the node configuration's Outputs schema;
+	// values in data are automatically converted to the types declared there.
+	Publish(handle string, data map[string]any) error
 
 	// ReportError publishes a node error to the platform.
 	ReportError(code ErrorCode, err error)

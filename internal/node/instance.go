@@ -11,8 +11,6 @@ import (
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
 )
 
-const defaultOutputHandle = "output1"
-
 type Instance struct {
 	sdk         core.SDK
 	logger      contract.Logger
@@ -134,11 +132,11 @@ func (instance *Instance) Stop() {
 	instance.Shutdown()
 }
 
-func (instance *Instance) Publish(data map[string]any) error {
+func (instance *Instance) Publish(handle string, data map[string]any) error {
 	// Look up the expected output fields from the node config
-	desiredOutput, exists := instance.nodeConfig.Data.Outputs[defaultOutputHandle]
+	desiredOutput, exists := instance.nodeConfig.Data.Outputs[handle]
 	if !exists {
-		return fmt.Errorf("output handle %q does not exist for node %s", defaultOutputHandle, instance.nodeConfig.Data.Name)
+		return fmt.Errorf("output handle %q does not exist for node %s", handle, instance.nodeConfig.Data.Name)
 	}
 
 	// Warn on tags supplied by the handler that the schema does not define.
@@ -186,7 +184,7 @@ func (instance *Instance) Publish(data map[string]any) error {
 		return fmt.Errorf("failed to marshal neoflow message: %v", err)
 	}
 
-	topic := fmt.Sprintf("neoedgex/neoflow/out/%s/%s", instance.nodeConfig.ID, defaultOutputHandle)
+	topic := fmt.Sprintf("neoedgex/neoflow/out/%s/%s", instance.nodeConfig.ID, handle)
 	return instance.sdk.Messenger().Publish(topic, 2, bytes)
 }
 

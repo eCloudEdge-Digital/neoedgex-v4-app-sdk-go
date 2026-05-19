@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,38 +23,86 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	httpClient := http.Client{}
 
 	for msg := range ctx.Messages() {
-		// 範例：只處理 handle 為 input1 的訊息，其他 handle 的訊息不處理。
-		// (目前只有 input1 這個 handle 的訊息)
-		if msg.Handle != "input1" {
+		// 範例：依 msg.Handle 將訊息分派到對應的 input 處理流程，
+		// 各自準備不同的 API path 與 request body。
+		var apiPath string
+		var requestBody []byte
+		switch msg.Handle {
+		case "input1":
+			// 範例：input1 攜帶 temperature (int32)
+			var temperature int32
+			if value, exists := msg.Data["temperature"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined in input1 schema"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no temperature value in input1 message"))
+				continue
+			} else if castedValue, ok := value.(int32); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined as int32 in input1 schema"))
+				continue
+			} else {
+				temperature = castedValue
+			}
+			apiPath = "/temperature"
+			requestBody = []byte(fmt.Sprintf(`{"value": %d}`, temperature))
+
+		case "input2":
+			// 範例：input2 攜帶 running (bool)
+			var running bool
+			if value, exists := msg.Data["running"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running is not defined in input2 schema"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no running value in input2 message"))
+				continue
+			} else if castedValue, ok := value.(bool); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running is not defined as bool in input2 schema"))
+				continue
+			} else {
+				running = castedValue
+			}
+			apiPath = "/status"
+			requestBody = []byte(fmt.Sprintf(`{"running": %t}`, running))
+
+		case "input3":
+			// 範例：input3 攜帶 message (string)
+			var message string
+			if value, exists := msg.Data["message"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined in input3 schema"))
+				continue
+			} else if value == nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no message value in input3 message"))
+				continue
+			} else if castedValue, ok := value.(string); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined as string in input3 schema"))
+				continue
+			} else {
+				message = castedValue
+			}
+			apiPath = "/event"
+			body, err := json.Marshal(map[string]string{"message": message})
+			if err != nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("failed to encode event body: %w", err))
+				continue
+			}
+			requestBody = body
+
+		default:
+			// 未在 schema 中定義的 handle，忽略即可
 			continue
 		}
 
-		// 範例：從 input1 的訊息中讀取 temperature 欄位
-		var temperature int32
-		if value, exists := msg.Data["temperature"]; !exists {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined in input schema"))
-			continue
-		} else if value == nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no temperature value in message"))
-			continue
-		} else if castedValue, ok := value.(int32); !ok {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined as int32 in input schema"))
-			continue
-		} else {
-			temperature = castedValue
-		}
-
-		// 範例：將讀取到的 temperature 值以 POST 請求發布出去。
-		resp, err := httpClient.Post(httpEndpoint, "application/json", bytes.NewBuffer([]byte(fmt.Sprintf(`{"number": %d}`, temperature))))
+		// 範例：依 input 來源送出對應的 HTTP POST 請求
+		resp, err := httpClient.Post(httpEndpoint+apiPath, "application/json", bytes.NewBuffer(requestBody))
 		if err != nil {
-			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("failed to send POST request: %w", err))
+			ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("failed to POST %s: %w", apiPath, err))
 			continue
 		}
 
-		// 範例：將讀取到的 temperature 值以 number 欄位發布至 output1，並帶上 POST 請求的回應狀態碼 response_status 欄位。
-		if err := ctx.Publish(map[string]any{
-			"temperature":     temperature,
-			"response_status": resp.StatusCode,
+		// 範例：將剛剛呼叫的 API path 與回應狀態碼發布至 output1
+		if err := ctx.Publish("output1", map[string]any{
+			"api_path":        apiPath,
+			"response_status": int32(resp.StatusCode),
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}

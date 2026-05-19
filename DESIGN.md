@@ -92,17 +92,18 @@ type NodeContext interface {
     // 接收上游傳入的訊息，channel 關閉代表節點已停止
     Messages() <-chan Message
 
-    // 發布資料至下游節點（自動依 output schema 轉換型別）
-    Publish(data map[string]any) error
+    // 發布資料至下游節點，handle 指定要送往哪個 output handle
+    // （自動依 output schema 轉換型別）
+    Publish(handle string, data map[string]any) error
 
     // 回報節點事件（錯誤、狀態）
     ReportError(code ErrorCode, err error)
 }
 ```
 
-`Publish(data map[string]any)` 的 output 行為如下：
+`Publish(handle, data)` 的 output 行為如下：
 
-- SDK 會依 `output1` schema 逐欄位建構 payload。
+- SDK 會依 `Outputs[handle]` schema 逐欄位建構 payload；handle 必須在 node config 的 Outputs 中已定義，否則 Publish 回傳 error。
 - SDK 會在最終送出的 top-level payload 加上 `timestamp`，值為 publish 當下的 RFC3339 字串。
 - 若 schema 欄位在 `data` 中缺少，SDK 會自動補上一個 empty field（序列化後是 `type=""`、`format=""`、`value=""`）。
 - 若 schema 欄位有提供，但 value 是 `nil`，SDK 也會自動補成 empty field。
@@ -148,8 +149,8 @@ func (a *OpcuaApp) Handle(ctx neoedgex.NodeContext) {
             continue
         }
 
-        // 發布結果（自動轉換型別，無需手動建構 typed output payload）
-        ctx.Publish(map[string]any{
+        // 發布結果到 output1（自動轉換型別，無需手動建構 typed output payload）
+        ctx.Publish("output1", map[string]any{
             "value": result,
         })
     }
