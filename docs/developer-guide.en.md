@@ -1,5 +1,7 @@
 # NeoEdgeX App SDK v4 Developer Guide
 
+> See the [Changelog](#changelog) at the end for the latest release notes.
+
 ## What This SDK Is
 
 NeoEdgeX App SDK v4 is the Go SDK for building NeoEdgeX node applications such as drivers, protocol adapters, forwarders, and processors. It gives third-party developers a standard runtime model:
@@ -118,7 +120,7 @@ Custom App input handles live under `config.data.inputs`. A node can declare mul
       { "key": "running", "type": "bool", "format": "bool" }
     ],
     "input3": [
-      { "key": "capturedAt", "type": "string", "format": "datetime" }
+      { "key": "payload", "type": "string", "format": "json" }
     ]
   }
 }
@@ -393,7 +395,8 @@ neoedgex.Message{
 	Source:    "upstream-node",
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
-		"capturedAt": nil,
+		// A format=json field arrives as raw JSON text; the handler unmarshals it itself.
+		"payload": `{"ratio":0.42,"userID":18000000000000000000}`,
 	},
 }
 ```
@@ -421,7 +424,6 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 			} else {
 				temperature = castedValue
 			}
-			_ = temperature
 			// ...
 
 		case "input2":
@@ -439,31 +441,73 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 			} else {
 				running = castedValue
 			}
-			_ = running
 			// ...
 
 		case "input3":
-			// Example: read capturedAt from the input3 message.
-			var capturedAt time.Time
-			if value, exists := msg.Data["capturedAt"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt"))
+			// Example: read the payload field (format=json). The SDK hands
+			// the raw JSON text to the handler as a string; the handler
+			// is responsible for unmarshalling it.
+			var rawPayload string
+			if value, exists := msg.Data["payload"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag payload"))
 				continue
 			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt was not successfully produced by the upstream node"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload was not successfully produced by the upstream node"))
 				continue
-			} else if castedValue, ok := value.(time.Time); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt as datetime"))
+			} else if castedValue, ok := value.(string); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag payload as format=json"))
 				continue
 			} else {
-				capturedAt = castedValue
+				rawPayload = castedValue
 			}
-			_ = capturedAt
+
+			// Example: decode the payload with json.Unmarshal into a
+			// map[string]any. Note: encoding/json packs every nested
+			// number into float64 by default, so int64 / uint64
+			// magnitudes beyond float64's 2^53 mantissa (≈ 9×10^15)
+			// silently lose precision. If you need to preserve large
+			// integers, see the json.Decoder.UseNumber() example below.
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload is not a valid JSON object: %w", err))
+				continue
+			}
+
+			// Example: read payload.ratio as float64.
+			var ratio float64
+			if rawValue, exists := payload["ratio"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload is missing field ratio"))
+				continue
+			} else if castedValue, ok := rawValue.(float64); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload.ratio is not a float64, got %T", rawValue))
+				continue
+			} else {
+				ratio = castedValue
+			}
 			// ...
 
 		default:
 			// Handle not defined in the schema: ignore it.
 			continue
 		}
+	}
+}
+```
+
+If a `format=json` payload contains integers beyond `float64`'s precision (e.g. `int64` / `uint64` magnitudes), switch the decode to `json.Decoder.UseNumber()`: nested numbers are preserved as `json.Number`, and handlers extract values via `.Int64() (int64, error)`, `.Float64() (float64, error)`, or `.String() string` as needed. `json.Number` has no `Uint64()` method, and `.Int64()` errors on values past `MaxInt64`; to cover the full `uint64` range (up to `MaxUint64`), use `strconv.ParseUint(num.String(), 10, 64)`.
+
+```go
+var payload map[string]any
+dec := json.NewDecoder(strings.NewReader(rawPayload))
+dec.UseNumber()
+if err := dec.Decode(&payload); err != nil {
+	// handle err
+}
+
+// Extract a uint64 magnitude beyond the int64 range.
+if num, ok := payload["userID"].(json.Number); ok {
+	if userID, err := strconv.ParseUint(num.String(), 10, 64); err == nil {
+		_ = userID
 	}
 }
 ```
@@ -490,6 +534,9 @@ Treat `msg.Data` with this fixed meaning:
 | `string` | `string` |
 | `datetime` | `time.Time` |
 | `base64` | `[]byte` |
+| `json` | `string` (raw JSON text) |
+
+A `json` field on the wire is a JSON object or array literal. The SDK does not call `json.Unmarshal` for you — it hands the raw text to your handler as a `string`. Your handler decides whether to decode it (and whether as object or array), and whether to use `json.Number` to preserve large-integer precision.
 
 ### Publish Rules
 
@@ -674,6 +721,18 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
       <td>Bytes are base64-encoded.</td>
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>Other Go types are not accepted.</td>
+    </tr>
+    <tr>
+      <td rowspan="2"><code>json</code></td>
+      <td>Any marshalable Go value (<code>map</code>, <code>slice</code>, <code>struct</code>, <code>json.RawMessage</code>, etc.)</td>
+      <td>Serialised with <code>encoding/json.Marshal</code>; the result must be a JSON object (<code>{...}</code>) or array (<code>[...]</code>).</td>
+      <td><code>map[string]any{"foo": "bar"} -&gt; "{\"foo\":\"bar\"}"</code>, <code>[]int{1,2,3} -&gt; "[1,2,3]"</code></td>
+      <td rowspan="2">Marshal results that are JSON scalars (number, quoted string, bool, null) are rejected; values that cannot be marshalled (channels, functions, etc.) are also rejected. On rejection the field is set to an empty field and <code>ReportError</code> is called, matching how other format conversion failures are surfaced.</td>
+    </tr>
+    <tr>
+      <td><code>string</code> / <code>[]byte</code> (already-serialised JSON text)</td>
+      <td>Passed through verbatim (not re-marshalled); must pass <code>json.Valid</code> and be a JSON object or array.</td>
+      <td><code>`{"foo":"bar"}` -&gt; "{\"foo\":\"bar\"}"</code></td>
     </tr>
   </tbody>
 </table>
@@ -922,3 +981,31 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 - Depending on non-public repository paths instead of the documented SDK surface.
 - Leaving mock mode enabled in production code.
 - Assuming every input tag in `msg.Data` always contains a directly usable value; in practice, some fields may be `nil`, and the app needs to decide how to handle them.
+
+## Changelog
+
+This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+### v1.1.0 — unreleased
+
+#### Added
+
+- **Multi-handle support** for both input and output schemas. A node may declare multiple handles, and handlers dispatch with `switch msg.Handle`.
+- **`json` data format** (declared as `type: "string", format: "json"`) for carrying arbitrary JSON object / array payloads:
+  - `ctx.Publish` accepts any value that marshals to a JSON object or array. `string` and `[]byte` arguments are treated as already-serialised JSON text and passed through verbatim (validated with `json.Valid`); other Go values go through `json.Marshal`. The final encoding must be an object (`{...}`) or array (`[...]`); JSON scalars (number, quoted string, bool, null) are rejected.
+  - On decode, the handler receives the raw JSON text as a Go `string` and unmarshals it itself. Use `json.Unmarshal` for the simple case; use `json.Decoder.UseNumber()` plus `.Int64()` / `.Float64()` / `strconv.ParseUint(num.String(), 10, 64)` when nested numbers need full precision.
+  - The `json` format does not convert to or from any other format.
+
+#### Changed (breaking)
+
+- `ctx.Publish` signature changed from `Publish(data map[string]any) error` to `Publish(handle string, data map[string]any) error`. Callers must pass the destination output handle explicitly.
+
+#### Documentation
+
+- Removed the "only `input1` / `output1` supported" claims from this guide; multi-handle usage is now the canonical example.
+- Added a complete worked example for `format=json` covering both the simple `json.Unmarshal` path and the precision-preserving `json.Decoder.UseNumber` path (including the `strconv.ParseUint(num.String(), 10, 64)` recovery for `uint64` values beyond `MaxInt64`).
+- The `format → Go type` table and the `Publish` conversion table both gained a `json` row.
+
+### v1.0.0 — 2026-05-05
+
+Initial public release.
