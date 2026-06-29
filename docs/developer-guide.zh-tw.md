@@ -120,7 +120,7 @@ input schema 定義在 `config.data.inputs`：
       { "key": "running", "type": "bool", "format": "bool" }
     ],
     "input3": [
-      { "key": "payload", "type": "string", "format": "json" }
+      { "key": "capturedAt", "type": "string", "format": "datetime" }
     ]
   }
 }
@@ -379,8 +379,7 @@ neoedgex.Message{
 	Source:    "upstream-node",
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
-		// format=json 的欄位以 raw JSON 字串遞給 handler，由 handler 自行 unmarshal
-		"payload": `{"ratio":0.42,"userID":18000000000000000000}`,
+		"capturedAt": nil,
 	},
 }
 ```
@@ -408,6 +407,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 			} else {
 				temperature = castedValue
 			}
+			_ = temperature
 			// ...
 
 		case "input2":
@@ -425,70 +425,31 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 			} else {
 				running = castedValue
 			}
+			_ = running
 			// ...
 
 		case "input3":
-			// 範例：從 input3 讀取 payload 欄位 (format=json)。SDK 把 raw JSON 文字
-			// 以 string 遞給 handler，由 handler 自行 unmarshal
-			var rawPayload string
-			if value, exists := msg.Data["payload"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 沒有定義 tag payload"))
+			// 範例：從 input3 的訊息中讀取 capturedAt 欄位
+			var capturedAt time.Time
+			if value, exists := msg.Data["capturedAt"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 沒有定義 tag capturedAt"))
 				continue
 			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload 沒有由上游節點成功輸出"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt 沒有由上游節點成功輸出"))
 				continue
-			} else if castedValue, ok := value.(string); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag payload 為 format=json"))
-				continue
-			} else {
-				rawPayload = castedValue
-			}
-
-			// 範例：用 json.Unmarshal 把 payload 解成 map[string]any。
-			// 注意：encoding/json 預設把所有 nested number 解成 float64，
-			// 超過 float64 mantissa（2^53 ≈ 9×10^15）的 int64 / uint64 巨值會掉精度；
-			// 若需要保留大整數精度，見下方 json.Decoder.UseNumber() 範例
-			var payload map[string]any
-			if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload 不是合法的 JSON object: %w", err))
-				continue
-			}
-
-			// 範例：取出 payload.ratio 為 float64
-			var ratio float64
-			if rawValue, exists := payload["ratio"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload 缺少 ratio 欄位"))
-				continue
-			} else if castedValue, ok := rawValue.(float64); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload.ratio 不是 float64, 是 %T", rawValue))
+			} else if castedValue, ok := value.(time.Time); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag capturedAt 為 datetime"))
 				continue
 			} else {
-				ratio = castedValue
+				capturedAt = castedValue
 			}
+			_ = capturedAt
 			// ...
 
 		default:
 			// 未在 schema 中定義的 handle，忽略即可
 			continue
 		}
-	}
-}
-```
-
-若 `format=json` 的 payload 內含超出 `float64` 精度的大整數（例如 `int64` 或 `uint64` 巨值），改用 `json.Decoder.UseNumber()`：nested 數字會保留為 `json.Number`，handler 視需要呼叫 `.Int64() (int64, error)`、`.Float64() (float64, error)` 或 `.String() string`。`json.Number` 沒有 `Uint64()` 方法、且 `.Int64()` 對超過 `MaxInt64` 的值會 error，要還原 `uint64` 全範圍（最高至 `MaxUint64`）請用 `strconv.ParseUint(num.String(), 10, 64)`。
-
-```go
-var payload map[string]any
-dec := json.NewDecoder(strings.NewReader(rawPayload))
-dec.UseNumber()
-if err := dec.Decode(&payload); err != nil {
-	// 處理 error
-}
-
-// 取出超出 int64 範圍的 uint64 巨值
-if num, ok := payload["userID"].(json.Number); ok {
-	if userID, err := strconv.ParseUint(num.String(), 10, 64); err == nil {
-		_ = userID
 	}
 }
 ```
@@ -515,9 +476,6 @@ if num, ok := payload["userID"].(json.Number); ok {
 | `string` | `string` |
 | `datetime` | `time.Time` |
 | `base64` | `[]byte` |
-| `json` | `string`（raw JSON 文字） |
-
-`json` format 的 wire value 是一段 JSON object 或 array 文字。SDK 不替你 `json.Unmarshal`，原樣以 `string` 交給 handler；要不要 unmarshal、是要當 object 還是 array、要不要用 `json.Number` 保留大整數精度，都由 handler 決定。
 
 ### Publish 規則
 
@@ -698,18 +656,6 @@ if err != nil {
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>其他 Go 型別都不支援。</td>
     </tr>
-    <tr>
-      <td rowspan="2"><code>json</code></td>
-      <td>任意可 marshal 的 Go 值（<code>map</code>、<code>slice</code>、<code>struct</code>、<code>json.RawMessage</code> 等）</td>
-      <td>用 <code>encoding/json.Marshal</code> 序列化後，必須是 JSON object (<code>{...}</code>) 或 array (<code>[...]</code>)。</td>
-      <td><code>map[string]any{"foo": "bar"} -&gt; "{\"foo\":\"bar\"}"</code>、<code>[]int{1,2,3} -&gt; "[1,2,3]"</code></td>
-      <td rowspan="2">Marshal 結果是 scalar（number、quoted string、bool、null）的會被拒絕；無法 marshal 的值（channel、function 等）也會被拒絕。拒絕時該欄位會被設為 empty field 並呼叫 <code>ReportError</code>，與其他 format 的型別轉換失敗一致。</td>
-    </tr>
-    <tr>
-      <td><code>string</code> / <code>[]byte</code>（已 marshal 過的 JSON 文字）</td>
-      <td>原樣 passthrough（不再 marshal 一次）；必須通過 <code>json.Valid</code> 並且是 object 或 array。</td>
-      <td><code>`{"foo":"bar"}` -&gt; "{\"foo\":\"bar\"}"</code></td>
-    </tr>
   </tbody>
 </table>
 
@@ -858,7 +804,7 @@ func main() {
         },
         "application": {
           "key": "demo-app",
-          "version": "1.0.0"
+          "version": "1.1.1"
         },
         "settings": {}
       }
@@ -956,28 +902,17 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 ## 版本變更紀錄
 
-本 SDK 遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+本 SDK 遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。最新版本列在最前面。
 
-### v1.1.0 — unreleased
+### v1.1.1 — 2026-06-29
 
-#### 新增
+- 還原了 v1.1.0 引入的 JSON 資料格式（移除 `FormatJson` 與 JSON payload 轉換）。與 Python SDK v1.1.1 對齊。
 
-- **多 handle 支援**：節點的 input 與 output schema 都可同時宣告多個 handle，handler 依 `msg.Handle` 將訊息分派到對應流程。
-- **`json` 資料格式**（schema 寫成 `type: "string", format: "json"`），用來承載任意 JSON 物件或陣列：
-  - `ctx.Publish` 可傳入任意能序列化為 JSON 物件或陣列的值。`string` 與 `[]byte` 視為已經序列化好的 JSON 文字，原樣帶過（會以 `json.Valid` 驗證合法性）；其他型別走 `json.Marshal`。最終結果必須是物件 (`{...}`) 或陣列 (`[...]`)，純量（數字、字串、布林、null）一律拒絕。
-  - Handler 拿到的是原始 JSON 文字（Go `string`），由 handler 自行反序列化。一般情境用 `json.Unmarshal` 即可；若巢狀數值需要保留精度，改用 `json.Decoder.UseNumber()`，再以 `.Int64()`、`.Float64()` 或 `strconv.ParseUint(num.String(), 10, 64)` 取值。
-  - `json` 與其他格式之間無法互相轉換。
+### v1.1.0 — 2026-05-20
 
-#### 變更（不相容）
-
-- `ctx.Publish` 函式簽名變更：`Publish(data map[string]any) error` → `Publish(handle string, data map[string]any) error`。呼叫端必須明確指定目的 output handle。
-
-#### 文件
-
-- 移除「只支援 `input1` / `output1`」的敘述，改以多 handle 為標準範例。
-- 新增 `format=json` 的完整讀取範例，涵蓋 `json.Unmarshal` 的一般情境，以及 `json.Decoder.UseNumber()` 的高精度情境（含 `uint64` 巨值的還原方式）。
-- `format` 對 Go 型別的對照表，以及 Publish 轉換表，皆新增 `json` 一列。
+- 新增 input 與 output schema 的多 handle 支援。`ctx.Publish` 改為必須明確指定目的 handle（`Publish(handle string, data map[string]any) error`），handler 以 `switch msg.Handle` 進行分派。
+- 新增可承載任意 JSON payload 的 JSON 資料格式（已於 v1.1.1 還原）。
 
 ### v1.0.0 — 2026-05-05
 
-首次公開發行。
+- 首次公開發行。

@@ -19,7 +19,6 @@ const (
 	FormatString      DataFormat = "string"
 	FormatDatetime    DataFormat = "datetime"
 	FormatBase64      DataFormat = "base64"
-	FormatJson        DataFormat = "json"
 )
 
 // TypeFormatMap 以 format 為 key、對應的 type 為 value，方便直接查詢 format 合法性與所屬型別。
@@ -38,7 +37,6 @@ var TypeFormatMap = map[DataFormat]DataType{
 	FormatString:      TypeString,
 	FormatDatetime:    TypeString,
 	FormatBase64:      TypeRaw,
-	FormatJson:        TypeString,
 }
 
 func (dataFormat DataFormat) GetType() DataType {
@@ -89,14 +87,6 @@ func (dataFormat DataFormat) CanConvertTo(destFormat DataFormat) bool {
 	case FormatBase64:
 		switch srcFormat {
 		case FormatBase64:
-			return true
-		default:
-			return false
-		}
-
-	case FormatJson:
-		switch srcFormat {
-		case FormatJson:
 			return true
 		default:
 			return false

@@ -2,12 +2,10 @@ package contract
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -21,15 +19,6 @@ type PortFieldData struct {
 func NewPortFieldDataWithString(value string, format DataFormat) (*PortFieldData, error) {
 	if !format.GetType().IsSupported() {
 		return nil, fmt.Errorf("unsupported data format '%s'", format)
-	}
-
-	// FormatJson runs through the same validation pipeline as
-	// NewPortFieldDataWithAny: the string must itself be valid JSON
-	// and shaped as an object or array. Otherwise the public string
-	// constructor would silently produce malformed JSON fields,
-	// because ConvertValueByFormat is a no-op passthrough for json.
-	if format == FormatJson {
-		return newJsonFieldFromAny(value)
 	}
 
 	if _, err := ConvertValueByFormat(value, format); err != nil {
@@ -51,13 +40,6 @@ func NewPortFieldDataWithAny(anyValue any, destFormat DataFormat) (*PortFieldDat
 		return nil, fmt.Errorf("nil value is not supported for conversion")
 	}
 
-	// FormatJson accepts any value that marshals to a JSON object or array.
-	// string and []byte are treated as already-serialised JSON text;
-	// everything else goes through json.Marshal.
-	if destFormat == FormatJson {
-		return newJsonFieldFromAny(anyValue)
-	}
-
 	value, srcFormat, err := ConvertAnyValue(anyValue)
 	if err != nil {
 		return nil, err
@@ -70,43 +52,6 @@ func NewPortFieldDataWithAny(anyValue any, destFormat DataFormat) (*PortFieldDat
 		Type:   srcFormat.GetType(),
 		Format: srcFormat,
 	}.ConvertTo(destFormat)
-}
-
-func newJsonFieldFromAny(anyValue any) (*PortFieldData, error) {
-	var rawJSON string
-
-	switch concrete := anyValue.(type) {
-	case string:
-		rawJSON = concrete
-		if !json.Valid([]byte(rawJSON)) {
-			return nil, fmt.Errorf("string value is not valid JSON")
-		}
-	case []byte:
-		rawJSON = string(concrete)
-		if !json.Valid([]byte(rawJSON)) {
-			return nil, fmt.Errorf("[]byte value is not valid JSON")
-		}
-	default:
-		encoded, err := json.Marshal(anyValue)
-		if err != nil {
-			return nil, fmt.Errorf("cannot encode value of type '%T' as JSON: %v", anyValue, err)
-		}
-		rawJSON = string(encoded)
-	}
-
-	// JSON top-level must be an object or an array; scalars (number, plain
-	// string, bool, null) are rejected. The shape check uses the trimmed
-	// first byte, but the stored value preserves the original encoding.
-	trimmed := strings.TrimSpace(rawJSON)
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-		return nil, fmt.Errorf("value of type '%T' is not a JSON object or array", anyValue)
-	}
-
-	return &PortFieldData{
-		Type:   TypeString,
-		Format: FormatJson,
-		Value:  rawJSON,
-	}, nil
 }
 
 func NewEmptyField() *PortFieldData {
@@ -191,13 +136,6 @@ func (v PortFieldData) ConvertTo(destFormat DataFormat) (*PortFieldData, error) 
 			// Only raw to raw conversion is supported
 			switch srcFormat {
 			case FormatBase64:
-				return srcValue, nil
-			}
-
-		case FormatJson:
-			// Only json to json conversion is supported
-			switch srcFormat {
-			case FormatJson:
 				return srcValue, nil
 			}
 		}
@@ -372,11 +310,6 @@ func ConvertValueByFormat(value string, srcFormat DataFormat) (any, error) {
 		} else {
 			return bytesValue, nil
 		}
-
-	case FormatJson:
-		// Hand the raw JSON text back as-is; handlers decide how to
-		// unmarshal it (object vs array, number precision, etc.).
-		return value, nil
 
 	case FormatBool:
 		return (value == "true"), nil

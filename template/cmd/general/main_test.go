@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,14 +45,10 @@ func TestExampleAppRoutesEachInputToItsOwnPath(t *testing.T) {
 	defer server.Close()
 	t.Setenv("HTTP_ENDPOINT", server.URL)
 
-	// 2^53+1 — a value that would lose precision if the handler decoded
-	// the raw JSON payload without json.Decoder.UseNumber.
-	const bigID = int64(1)<<53 + 1
-
 	messages := make(chan neoedgex.Message, 3)
 	messages <- neoedgex.Message{
 		Handle: "input1",
-		Data:   map[string]any{"temperature": float64(25.5)},
+		Data:   map[string]any{"temperature": int32(25)},
 	}
 	messages <- neoedgex.Message{
 		Handle: "input2",
@@ -61,11 +56,7 @@ func TestExampleAppRoutesEachInputToItsOwnPath(t *testing.T) {
 	}
 	messages <- neoedgex.Message{
 		Handle: "input3",
-		Data: map[string]any{
-			// SDK delivers format=json fields as raw JSON strings; the
-			// handler decides how to unmarshal them.
-			"payload": fmt.Sprintf(`{"id":%d,"label":"demo"}`, bigID),
-		},
+		Data:   map[string]any{"message": "hello"},
 	}
 	close(messages)
 
@@ -78,13 +69,9 @@ func TestExampleAppRoutesEachInputToItsOwnPath(t *testing.T) {
 	}
 
 	wantRequests := []recorded{
-		{path: "/temperature", body: `{"value": 25.5}`},
+		{path: "/temperature", body: `{"value": 25}`},
 		{path: "/status", body: `{"running": true}`},
-		// path encodes the int64 id; body is the raw JSON payload passed through.
-		{
-			path: fmt.Sprintf("/payload/%d", bigID),
-			body: fmt.Sprintf(`{"id":%d,"label":"demo"}`, bigID),
-		},
+		{path: "/event", body: `{"message":"hello"}`},
 	}
 	if len(requests) != len(wantRequests) {
 		t.Fatalf("expected %d requests, got %d: %+v", len(wantRequests), len(requests), requests)
@@ -98,7 +85,7 @@ func TestExampleAppRoutesEachInputToItsOwnPath(t *testing.T) {
 	wantPublished := []testutil.PublishedMessage{
 		{Handle: "output1", Data: map[string]any{"api_path": "/temperature", "response_status": int32(http.StatusCreated)}},
 		{Handle: "output1", Data: map[string]any{"api_path": "/status", "response_status": int32(http.StatusCreated)}},
-		{Handle: "output1", Data: map[string]any{"api_path": fmt.Sprintf("/payload/%d", bigID), "response_status": int32(http.StatusCreated)}},
+		{Handle: "output1", Data: map[string]any{"api_path": "/event", "response_status": int32(http.StatusCreated)}},
 	}
 	if len(ctx.PublishedData) != len(wantPublished) {
 		t.Fatalf("expected %d published payloads, got %d", len(wantPublished), len(ctx.PublishedData))
@@ -126,7 +113,7 @@ func TestExampleAppIgnoresUnknownHandle(t *testing.T) {
 
 	messages := make(chan neoedgex.Message, 1)
 	messages <- neoedgex.Message{
-		Handle: "input999",
+		Handle: "input4",
 		Data:   map[string]any{"foo": "bar"},
 	}
 	close(messages)

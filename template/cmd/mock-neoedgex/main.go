@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
 )
@@ -30,22 +29,22 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		var requestBody []byte
 		switch msg.Handle {
 		case "input1":
-			// 範例：input1 攜帶 temperature (double)
-			var temperature float64
+			// 範例：input1 攜帶 temperature (int32)
+			var temperature int32
 			if value, exists := msg.Data["temperature"]; !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined in input1 schema"))
 				continue
 			} else if value == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no temperature value in input1 message"))
 				continue
-			} else if castedValue, ok := value.(float64); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined as double in input1 schema"))
+			} else if castedValue, ok := value.(int32); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined as int32 in input1 schema"))
 				continue
 			} else {
 				temperature = castedValue
 			}
 			apiPath = "/temperature"
-			requestBody = []byte(fmt.Sprintf(`{"value": %v}`, temperature))
+			requestBody = []byte(fmt.Sprintf(`{"value": %d}`, temperature))
 
 		case "input2":
 			// 範例：input2 攜帶 running (bool)
@@ -66,46 +65,27 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 			requestBody = []byte(fmt.Sprintf(`{"running": %t}`, running))
 
 		case "input3":
-			// 範例：input3 攜帶 payload (format=json)，handler 拿到的是 raw JSON 字串，
-			// 由 app 自行決定怎麼 unmarshal、是否用 json.Number 保留大整數精度。
-			var rawPayload string
-			if value, exists := msg.Data["payload"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload is not defined in input3 schema"))
+			// 範例：input3 攜帶 message (string)
+			var message string
+			if value, exists := msg.Data["message"]; !exists {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined in input3 schema"))
 				continue
 			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no payload value in input3 message"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no message value in input3 message"))
 				continue
 			} else if castedValue, ok := value.(string); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload is not delivered as string (format=json), got %T", value))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined as string in input3 schema"))
 				continue
 			} else {
-				rawPayload = castedValue
+				message = castedValue
 			}
-
-			// 範例：用 json.Decoder.UseNumber() 讓 nested 數字保留為 json.Number，
-			// 才能還原超過 float64 精度（2^53）的 int64 / uint64
-			var payload map[string]any
-			dec := json.NewDecoder(strings.NewReader(rawPayload))
-			dec.UseNumber()
-			if err := dec.Decode(&payload); err != nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload is not a JSON object: %w", err))
-				continue
-			}
-
-			// 範例：取出 payload.id（json.Number）→ int64
-			idNumber, ok := payload["id"].(json.Number)
-			if !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload 'id' is not a number"))
-				continue
-			}
-			id, err := idNumber.Int64()
+			apiPath = "/event"
+			body, err := json.Marshal(map[string]string{"message": message})
 			if err != nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("payload 'id' is not an int64: %w", err))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("failed to encode event body: %w", err))
 				continue
 			}
-
-			apiPath = fmt.Sprintf("/payload/%d", id)
-			requestBody = []byte(rawPayload)
+			requestBody = body
 
 		default:
 			// 未在 schema 中定義的 handle，忽略即可
