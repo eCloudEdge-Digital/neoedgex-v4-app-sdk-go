@@ -6,33 +6,37 @@ import "time"
 type DataType string
 
 const (
-	TypeUndefined DataType = ""
-	TypeBool      DataType = "bool"
-	TypeInt16     DataType = "int16"
-	TypeInt32     DataType = "int32"
-	TypeInt64     DataType = "int64"
-	TypeUint16    DataType = "uint16"
-	TypeUint32    DataType = "uint32"
-	TypeUint64    DataType = "uint64"
-	TypeFloat     DataType = "float"
-	TypeDouble    DataType = "double"
-	TypeString    DataType = "string"
-	TypeRaw       DataType = "raw"
+	TypeUndefined  DataType = ""
+	TypeBool       DataType = "bool"
+	TypeInt16      DataType = "int16"
+	TypeInt32      DataType = "int32"
+	TypeInt64      DataType = "int64"
+	TypeUint16     DataType = "uint16"
+	TypeUint32     DataType = "uint32"
+	TypeUint64     DataType = "uint64"
+	TypeFloat      DataType = "float"
+	TypeDouble     DataType = "double"
+	TypeString     DataType = "string"
+	TypeRaw        DataType = "raw"
+	TypeJsonObject DataType = "jsonObject"
+	TypeJsonArray  DataType = "jsonArray"
 )
 
 // SupportedTypes 用於快速驗證 type 是否受支援。
 var SupportedTypes = map[DataType]struct{}{
-	TypeBool:   {},
-	TypeInt16:  {},
-	TypeInt32:  {},
-	TypeInt64:  {},
-	TypeUint16: {},
-	TypeUint32: {},
-	TypeUint64: {},
-	TypeFloat:  {},
-	TypeDouble: {},
-	TypeString: {},
-	TypeRaw:    {},
+	TypeBool:       {},
+	TypeInt16:      {},
+	TypeInt32:      {},
+	TypeInt64:      {},
+	TypeUint16:     {},
+	TypeUint32:     {},
+	TypeUint64:     {},
+	TypeFloat:      {},
+	TypeDouble:     {},
+	TypeString:     {},
+	TypeRaw:        {},
+	TypeJsonObject: {},
+	TypeJsonArray:  {},
 }
 
 func GetDataType(anyValue any) DataType {
