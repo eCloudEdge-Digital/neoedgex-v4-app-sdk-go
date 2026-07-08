@@ -280,12 +280,24 @@ func ConvertValueByType(value string, srcType DataType) (any, error) {
 	case TypeBool:
 		return (value == "true"), nil
 
-	case TypeJsonObject, TypeJsonArray:
-		var jsonValue any
-		if err := json.Unmarshal([]byte(value), &jsonValue); err != nil {
+	case TypeJsonObject:
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(value), &obj); err != nil {
 			return nil, err
+		} else if obj == nil {
+			return nil, fmt.Errorf("value '%s' is not a valid JSON object", value)
 		} else {
-			return jsonValue, nil
+			return obj, nil
+		}
+
+	case TypeJsonArray:
+		var arr []any
+		if err := json.Unmarshal([]byte(value), &arr); err != nil {
+			return nil, err
+		} else if arr == nil {
+			return nil, fmt.Errorf("value '%s' is not a valid JSON array", value)
+		} else {
+			return arr, nil
 		}
 
 	default:
