@@ -35,7 +35,7 @@
 ┌──────────────────────▼──────────────────────────────┐
 │            neoedgex/contract/  (共用合約層)           │
 │   提供 SDK 內部與其他 repo 共用的底層型別定義          │
-│   DataType · DataFormat · PortFieldData · Node 等    │
+│   DataType · PortFieldData · Node 等                 │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -49,7 +49,7 @@
 | 套件 | 可見性 | 職責 |
 |------|--------|------|
 | `neoedgex/` | **公開** | 客戶唯一需要 import 的主要套件，提供 App、NodeHandler、NodeContext、Node、Message、EnableMock 等高階 API |
-| `neoedgex/contract/` | **公開** | 共用型別定義（DataType、DataFormat、PortFieldData、Node 等）的底層實作，供 SDK 內部與外部 repo（如 common-go）引用；第三方 app 不需要直接 import |
+| `neoedgex/contract/` | **公開** | 共用型別定義（DataType、PortFieldData、Node 等）的底層實作，供 SDK 內部與外部 repo（如 common-go）引用；第三方 app 不需要直接 import |
 | `neoedgex/mock/` | **公開** | Mock 模式設定型別（MockConfig）與 LoadConfig 檔案解析 |
 | `internal/` | **私有** | SDK 實作細節，Go toolchain 強制禁止外部 import |
 

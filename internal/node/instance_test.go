@@ -94,7 +94,7 @@ func TestPublishSkipsOutputValidation(t *testing.T) {
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
 				"output1": {
-					{Key: "value", Type: contract.TypeString, Format: contract.FormatInt64},
+					{Key: "value", Type: contract.TypeString},
 				},
 			},
 		},
@@ -121,7 +121,7 @@ func TestPublishSkipsOutputValidation(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, message.Timestamp); err != nil {
 		t.Fatalf("expected RFC3339 timestamp, got %q: %v", message.Timestamp, err)
 	}
-	if got := message.Data["value"].Type; got != contract.TypeInt64 {
+	if got := message.Data["value"].Type; got != contract.TypeString {
 		t.Fatalf("unexpected published field type: %s", got)
 	}
 }
@@ -138,8 +138,8 @@ func TestPublishFillsMissingOutputFieldWithEmptyField(t *testing.T) {
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
 				"output1": {
-					{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
-					{Key: "status", Type: contract.TypeString, Format: contract.FormatString},
+					{Key: "value", Type: contract.TypeInt64},
+					{Key: "status", Type: contract.TypeString},
 				},
 			},
 		},
@@ -157,7 +157,7 @@ func TestPublishFillsMissingOutputFieldWithEmptyField(t *testing.T) {
 		t.Fatalf("unexpected marshal output: %v", err)
 	}
 
-	if got := message.Data["status"]; got.Type != contract.TypeUndefined || got.Format != contract.FormatUndefined || got.Value != "" {
+	if got := message.Data["status"]; got.Type != contract.TypeUndefined || got.Value != "" {
 		t.Fatalf("unexpected empty field: %#v", got)
 	}
 }
@@ -174,7 +174,7 @@ func TestPublishTreatsNilFieldValueAsEmptyField(t *testing.T) {
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
 				"output1": {
-					{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
+					{Key: "value", Type: contract.TypeInt64},
 				},
 			},
 		},
@@ -192,7 +192,7 @@ func TestPublishTreatsNilFieldValueAsEmptyField(t *testing.T) {
 		t.Fatalf("unexpected marshal output: %v", err)
 	}
 
-	if got := message.Data["value"]; got.Type != contract.TypeUndefined || got.Format != contract.FormatUndefined || got.Value != "" {
+	if got := message.Data["value"]; got.Type != contract.TypeUndefined || got.Value != "" {
 		t.Fatalf("unexpected empty field for explicit nil: %#v", got)
 	}
 }
@@ -210,8 +210,8 @@ func TestPublishTreatsMissingAndNilFieldsEquivalently(t *testing.T) {
 				Name: "demo-node",
 				Outputs: map[string][]contract.PortFieldSchema{
 					"output1": {
-						{Key: "value", Type: contract.TypeInt64, Format: contract.FormatInt64},
-						{Key: "status", Type: contract.TypeString, Format: contract.FormatString},
+						{Key: "value", Type: contract.TypeInt64},
+						{Key: "status", Type: contract.TypeString},
 					},
 				},
 			},
@@ -263,7 +263,7 @@ func TestRunLoopSkipsInputValidation(t *testing.T) {
 			Name: "demo-node",
 			Inputs: map[string][]contract.PortFieldSchema{
 				"input1": {
-					{Key: "value", Type: contract.TypeString, Format: contract.FormatString},
+					{Key: "value", Type: contract.TypeString},
 				},
 			},
 		},
@@ -280,9 +280,8 @@ func TestRunLoopSkipsInputValidation(t *testing.T) {
 		Timestamp:    "2026-03-31T09:10:11Z",
 		Data: map[string]contract.PortFieldData{
 			"value": {
-				Type:   contract.TypeInt64,
-				Format: contract.FormatInt64,
-				Value:  "42",
+				Type:  contract.TypeInt64,
+				Value: "42",
 			},
 		},
 	})
@@ -324,7 +323,7 @@ func TestRunLoopLeavesTimestampEmptyWhenInboundPayloadOmitsIt(t *testing.T) {
 			Name: "demo-node",
 			Inputs: map[string][]contract.PortFieldSchema{
 				"input1": {
-					{Key: "value", Type: contract.TypeString, Format: contract.FormatString},
+					{Key: "value", Type: contract.TypeString},
 				},
 			},
 		},
@@ -343,9 +342,8 @@ func TestRunLoopLeavesTimestampEmptyWhenInboundPayloadOmitsIt(t *testing.T) {
 		SourceNodeID: "source-node",
 		Data: map[string]contract.PortFieldData{
 			"value": {
-				Type:   contract.TypeInt64,
-				Format: contract.FormatInt64,
-				Value:  "42",
+				Type:  contract.TypeInt64,
+				Value: "42",
 			},
 		},
 	})
@@ -402,22 +400,16 @@ func TestPublishNodeErrorPublishesToErrorTopic(t *testing.T) {
 	}
 }
 
-func TestDecodeIncomingDataSetsNilForUndefinedTypeOrFormat(t *testing.T) {
+func TestDecodeIncomingDataSetsNilForUndefinedType(t *testing.T) {
 	decoded := decodeIncomingData(map[string]contract.PortFieldData{
 		"undefined-type": {
-			Type:   contract.TypeUndefined,
-			Format: contract.FormatString,
-			Value:  "unexpected",
-		},
-		"undefined-format": {
-			Type:   contract.TypeString,
-			Format: contract.FormatUndefined,
-			Value:  "unexpected",
+			Type:  contract.TypeUndefined,
+			Value: "unexpected",
 		},
 		"empty": *contract.NewEmptyField(),
 	})
 
-	for _, key := range []string{"undefined-type", "undefined-format", "empty"} {
+	for _, key := range []string{"undefined-type", "empty"} {
 		if value, exists := decoded[key]; !exists || value != nil {
 			t.Fatalf("decoded %s field = %#v", key, decoded)
 		}
@@ -427,9 +419,8 @@ func TestDecodeIncomingDataSetsNilForUndefinedTypeOrFormat(t *testing.T) {
 func TestDecodeIncomingDataSetsNilForMalformedField(t *testing.T) {
 	decoded := decodeIncomingData(map[string]contract.PortFieldData{
 		"broken": {
-			Type:   contract.TypeInt64,
-			Format: contract.FormatInt64,
-			Value:  "not-a-number",
+			Type:  contract.TypeInt64,
+			Value: "not-a-number",
 		},
 	})
 
@@ -469,7 +460,7 @@ func TestPublishWarnsWhenDataContainsTagNotInOutputSchema(t *testing.T) {
 			Name: "demo-node",
 			Outputs: map[string][]contract.PortFieldSchema{
 				"output1": {
-					{Key: "value", Type: contract.TypeString, Format: contract.FormatInt64},
+					{Key: "value", Type: contract.TypeString},
 				},
 			},
 		},

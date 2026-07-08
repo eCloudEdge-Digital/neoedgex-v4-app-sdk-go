@@ -164,7 +164,7 @@ func (instance *Instance) Publish(handle string, data map[string]any) error {
 			continue
 		}
 
-		pf, err := contract.NewPortFieldDataWithAny(rawValue, fieldDef.Format)
+		pf, err := contract.NewPortFieldDataWithAny(rawValue, fieldDef.Type)
 		if err != nil {
 			portFields[fieldDef.Key] = *contract.NewEmptyField()
 			instance.ReportError(contract.CodeProcessError, fmt.Errorf("field %q: %w", fieldDef.Key, err))
@@ -221,7 +221,7 @@ func (instance *Instance) PublishHeartbeat() error {
 func decodeIncomingData(data map[string]contract.PortFieldData) map[string]any {
 	decoded := make(map[string]any, len(data))
 	for key, field := range data {
-		if field.Type == contract.TypeUndefined || field.Format == contract.FormatUndefined {
+		if field.Type == contract.TypeUndefined {
 			decoded[key] = nil
 			continue
 		}

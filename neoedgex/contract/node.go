@@ -19,9 +19,8 @@ type NodeData struct {
 
 // PortFieldSchema 描述 inputs / outputs 裡的鍵值與型別。
 type PortFieldSchema struct {
-	Key    string     `json:"key"`
-	Type   DataType   `json:"type"`
-	Format DataFormat `json:"format"`
+	Key  string   `json:"key"`
+	Type DataType `json:"type"`
 }
 
 // Application 描述節點綁定的 App 與版本資訊。

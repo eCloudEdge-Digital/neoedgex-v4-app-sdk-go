@@ -1,92 +1,37 @@
 package contract
 
-type DataFormat string
+// CanConvertTo 判斷來源型別是否可轉換為目標型別，維持與過往 format-based 轉換矩陣相同的允許/拒絕規則。
+func (dataType DataType) CanConvertTo(destType DataType) bool {
+	srcType := dataType
 
-// TypeFormat 常用格式名稱常數。
-const (
-	FormatUndefined   DataFormat = ""
-	FormatBool        DataFormat = "bool"
-	FormatInt16       DataFormat = "int16"
-	FormatInt32       DataFormat = "int32"
-	FormatInt64       DataFormat = "int64"
-	FormatSecond      DataFormat = "second"
-	FormatMillisecond DataFormat = "millisecond"
-	FormatUint16      DataFormat = "uint16"
-	FormatUint32      DataFormat = "uint32"
-	FormatUint64      DataFormat = "uint64"
-	FormatFloat       DataFormat = "float"
-	FormatDouble      DataFormat = "double"
-	FormatString      DataFormat = "string"
-	FormatDatetime    DataFormat = "datetime"
-	FormatBase64      DataFormat = "base64"
-)
-
-// TypeFormatMap 以 format 為 key、對應的 type 為 value，方便直接查詢 format 合法性與所屬型別。
-var TypeFormatMap = map[DataFormat]DataType{
-	FormatBool:        TypeBool,
-	FormatInt16:       TypeInt16,
-	FormatInt32:       TypeInt32,
-	FormatInt64:       TypeInt64,
-	FormatSecond:      TypeInt64,
-	FormatMillisecond: TypeInt64,
-	FormatUint16:      TypeUint16,
-	FormatUint32:      TypeUint32,
-	FormatUint64:      TypeUint64,
-	FormatFloat:       TypeFloat,
-	FormatDouble:      TypeDouble,
-	FormatString:      TypeString,
-	FormatDatetime:    TypeString,
-	FormatBase64:      TypeRaw,
-}
-
-func (dataFormat DataFormat) GetType() DataType {
-	dataType, exists := TypeFormatMap[dataFormat]
-	if exists {
-		return dataType
-	} else {
-		return TypeUndefined
-	}
-}
-
-func (dataFormat DataFormat) CanConvertTo(destFormat DataFormat) bool {
-	srcFormat := dataFormat
-
-	switch destFormat {
-	case FormatInt16, FormatInt32, FormatInt64, FormatUint16, FormatUint32, FormatUint64, FormatFloat, FormatDouble:
-		switch srcFormat {
-		case FormatInt16, FormatInt32, FormatInt64, FormatUint16, FormatUint32, FormatUint64, FormatFloat, FormatDouble, FormatBool, FormatString:
+	switch destType {
+	case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble:
+		switch srcType {
+		case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble, TypeBool, TypeString:
 			return true
 		default:
 			return false
 		}
 
-	case FormatSecond, FormatMillisecond, FormatDatetime:
-		switch srcFormat {
-		case FormatInt16, FormatInt32, FormatInt64, FormatUint16, FormatUint32, FormatUint64, FormatFloat, FormatDouble, FormatSecond, FormatMillisecond, FormatDatetime:
+	case TypeBool:
+		switch srcType {
+		case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble, TypeBool:
 			return true
 		default:
 			return false
 		}
 
-	case FormatBool:
-		switch srcFormat {
-		case FormatInt16, FormatInt32, FormatInt64, FormatUint16, FormatUint32, FormatUint64, FormatFloat, FormatDouble, FormatBool:
+	case TypeString:
+		switch srcType {
+		case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble, TypeBool, TypeString:
 			return true
 		default:
 			return false
 		}
 
-	case FormatString:
-		switch srcFormat {
-		case FormatInt16, FormatInt32, FormatInt64, FormatUint16, FormatUint32, FormatUint64, FormatFloat, FormatDouble, FormatBool, FormatString:
-			return true
-		default:
-			return false
-		}
-
-	case FormatBase64:
-		switch srcFormat {
-		case FormatBase64:
+	case TypeRaw:
+		switch srcType {
+		case TypeRaw:
 			return true
 		default:
 			return false

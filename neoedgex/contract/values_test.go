@@ -3,7 +3,7 @@ package contract
 import "testing"
 
 func TestNewPortFieldDataWithAnyRejectsNilValue(t *testing.T) {
-	field, err := NewPortFieldDataWithAny(nil, FormatInt64)
+	field, err := NewPortFieldDataWithAny(nil, TypeInt64)
 	if err == nil {
 		t.Fatal("expected error for nil value")
 	}
@@ -16,15 +16,15 @@ func TestNewPortFieldDataWithAnyRejectsNilValue(t *testing.T) {
 }
 
 func TestConvertAnyValueRejectsNilValue(t *testing.T) {
-	value, format, err := ConvertAnyValue(nil)
+	value, dataType, err := ConvertAnyValue(nil)
 	if err == nil {
 		t.Fatal("expected error for nil value")
 	}
 	if value != "" {
 		t.Fatalf("expected empty value, got %q", value)
 	}
-	if format != FormatUndefined {
-		t.Fatalf("expected undefined format, got %s", format)
+	if dataType != TypeUndefined {
+		t.Fatalf("expected undefined type, got %s", dataType)
 	}
 	if got := err.Error(); got != "nil value is not supported for conversion" {
 		t.Fatalf("unexpected error: %s", got)
@@ -34,15 +34,15 @@ func TestConvertAnyValueRejectsNilValue(t *testing.T) {
 func TestConvertAnyValueRejectsTypedNilSlice(t *testing.T) {
 	var raw []byte
 
-	value, format, err := ConvertAnyValue(raw)
+	value, dataType, err := ConvertAnyValue(raw)
 	if err == nil {
 		t.Fatal("expected error for typed nil slice")
 	}
 	if value != "" {
 		t.Fatalf("expected empty value, got %q", value)
 	}
-	if format != FormatUndefined {
-		t.Fatalf("expected undefined format, got %s", format)
+	if dataType != TypeUndefined {
+		t.Fatalf("expected undefined type, got %s", dataType)
 	}
 	if got := err.Error(); got != "nil value is not supported for conversion" {
 		t.Fatalf("unexpected error: %s", got)
