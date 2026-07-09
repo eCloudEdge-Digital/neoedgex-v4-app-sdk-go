@@ -60,10 +60,11 @@ func TestCanConvertTo(t *testing.T) {
 		{"jsonObject->raw denied", TypeJsonObject, TypeRaw, false},
 		{"undefined->raw denied", TypeUndefined, TypeRaw, false},
 
-		// --- json dest: default case, always denied (even self / from raw) ---
-		{"jsonObject->jsonObject denied", TypeJsonObject, TypeJsonObject, false},
-		{"jsonArray->jsonArray denied", TypeJsonArray, TypeJsonArray, false},
+		// --- json dest: same-shape only; every cross-type (incl. object<->array) denied ---
+		{"jsonObject->jsonObject", TypeJsonObject, TypeJsonObject, true},
+		{"jsonArray->jsonArray", TypeJsonArray, TypeJsonArray, true},
 		{"jsonObject->jsonArray denied", TypeJsonObject, TypeJsonArray, false},
+		{"jsonArray->jsonObject denied", TypeJsonArray, TypeJsonObject, false},
 		{"string->jsonObject denied", TypeString, TypeJsonObject, false},
 		{"raw->jsonArray denied", TypeRaw, TypeJsonArray, false},
 		{"int32->jsonObject denied", TypeInt32, TypeJsonObject, false},

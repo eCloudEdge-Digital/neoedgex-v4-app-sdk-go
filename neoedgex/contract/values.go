@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -189,6 +190,27 @@ func ConvertAnyValue(anyValue any) (string, DataType, error) {
 
 	case TypeRaw:
 		return base64.StdEncoding.EncodeToString(anyValue.([]byte)), TypeRaw, nil
+
+	case TypeJsonObject, TypeJsonArray:
+		// json.RawMessage is written to the wire verbatim (after trimming
+		// surrounding whitespace) so big-integer precision and key order are
+		// preserved; map[string]any / []any are marshaled by the SDK.
+		if raw, ok := anyValue.(json.RawMessage); ok {
+			// GetDataType sniffed the shape; strict-validate the payload exactly
+			// like the inbound path (rejects null, malformed json, wrong shape).
+			shape := GetDataType(raw)
+			trimmed := strings.TrimSpace(string(raw))
+			if _, err := ConvertValueByType(trimmed, shape); err != nil {
+				return "", TypeUndefined, fmt.Errorf("invalid json.RawMessage: %v", err)
+			}
+			return trimmed, shape, nil
+		}
+
+		bytes, err := json.Marshal(anyValue)
+		if err != nil {
+			return "", TypeUndefined, fmt.Errorf("cannot marshal value of type '%T' to json: %v", anyValue, err)
+		}
+		return string(bytes), GetDataType(anyValue), nil
 	}
 
 	return "", TypeUndefined, fmt.Errorf("unsupported value type '%T' for conversion", anyValue)

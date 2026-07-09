@@ -108,6 +108,8 @@ type NodeContext interface {
 - 若 schema 欄位在 `data` 中缺少，SDK 會自動補上一個 empty field（序列化後是 `type=""`、`value=""`）。
 - 若 schema 欄位有提供，但 value 是 `nil`，SDK 也會自動補成 empty field。
 - 最終送出的 payload 會帶齊 schema 中的所有 output keys。
+- `raw` 欄位在兩個方向都是 `[]byte`：inbound handler 從 `msg.Data` 讀到 `[]byte`，`Publish` 也接受 `[]byte`（SDK 在 wire 上做 base64 encode）。
+- `jsonObject` / `jsonArray` 欄位 `Publish` 只接受三種 Go 形式：`map[string]any`、`[]any`（由 SDK `json.Marshal`），以及 `json.RawMessage`（先嚴格驗證同 inbound，再逐字寫入 wire，保留大整數精度；只接受同形狀）。struct 不會自動 marshal，請自行轉成 `json.RawMessage`。轉換失敗時沿用既有語意：回報 error、該欄位送出 empty field，但訊息仍會送出。
 
 ### `Message` — 收到的訊息
 

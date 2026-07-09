@@ -37,6 +37,23 @@ func (dataType DataType) CanConvertTo(destType DataType) bool {
 			return false
 		}
 
+	case TypeJsonObject:
+		// json fields accept their own shape only (no cross-type conversion).
+		switch srcType {
+		case TypeJsonObject:
+			return true
+		default:
+			return false
+		}
+
+	case TypeJsonArray:
+		switch srcType {
+		case TypeJsonArray:
+			return true
+		default:
+			return false
+		}
+
 	default:
 		return false
 	}

@@ -659,22 +659,42 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     <tr>
       <td><code>raw</code></td>
       <td><code>[]byte</code></td>
-      <td>Bytes are base64-encoded. Only <code>raw</code> to <code>raw</code> is allowed; no other type converts to or from <code>raw</code>.</td>
+      <td>Bytes are base64-encoded on the wire. Only <code>raw</code> to <code>raw</code> is allowed; no other type converts to or from <code>raw</code>.</td>
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>Other Go types are not accepted.</td>
     </tr>
     <tr>
-      <td><code>jsonObject</code></td>
-      <td>JSON-object <code>string</code></td>
-      <td>Value must be a JSON-encoded string that decodes to an object; <code>null</code> and JSON arrays are rejected. Decoded to <code>map[string]any</code> on the reader side.</td>
-      <td><code>"{\"k\":1}" -&gt; "{\"k\":1}"</code></td>
-      <td rowspan="2">Strict validation. No cross-type conversion: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape.</td>
+      <td rowspan="3"><code>jsonObject</code></td>
+      <td><code>map[string]any</code></td>
+      <td>The SDK <code>json.Marshal</code>s the map to the wire value. The field must be declared <code>jsonObject</code>.</td>
+      <td><code>map[string]any{"k":1} -&gt; "{\"k\":1}"</code></td>
+      <td rowspan="6">Strict validation. Same-shape only: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape (object vs array is enforced, <code>null</code> is rejected). Structs are <b>not</b> auto-marshaled — marshal to <code>json.RawMessage</code> yourself. Any other Go type is rejected.</td>
     </tr>
     <tr>
-      <td><code>jsonArray</code></td>
-      <td>JSON-array <code>string</code></td>
-      <td>Value must be a JSON-encoded string that decodes to an array; <code>null</code> and JSON objects are rejected. Decoded to <code>[]any</code> on the reader side.</td>
-      <td><code>"[1,2,3]" -&gt; "[1,2,3]"</code></td>
+      <td><code>json.RawMessage</code> (object)</td>
+      <td>Strict-validated, then written <b>verbatim</b> (surrounding whitespace trimmed only — not re-marshaled/compacted), so big integers keep full precision. Shape is sniffed from the first non-whitespace byte.</td>
+      <td><code>json.RawMessage("{\"id\":9223372036854775807}")</code> is stored byte-for-byte.</td>
+    </tr>
+    <tr>
+      <td><code>[]any</code> (rejected here)</td>
+      <td>An array value cannot go into a <code>jsonObject</code> field.</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><code>jsonArray</code></td>
+      <td><code>[]any</code></td>
+      <td>The SDK <code>json.Marshal</code>s the slice to the wire value. The field must be declared <code>jsonArray</code>.</td>
+      <td><code>[]any{1,2,3} -&gt; "[1,2,3]"</code></td>
+    </tr>
+    <tr>
+      <td><code>json.RawMessage</code> (array)</td>
+      <td>Strict-validated, then written <b>verbatim</b> (whitespace trimmed only), preserving big-integer precision. Shape is sniffed from the first non-whitespace byte.</td>
+      <td><code>json.RawMessage("[9223372036854775807]")</code> is stored byte-for-byte.</td>
+    </tr>
+    <tr>
+      <td><code>map[string]any</code> (rejected here)</td>
+      <td>An object value cannot go into a <code>jsonArray</code> field.</td>
+      <td>—</td>
     </tr>
   </tbody>
 </table>
@@ -930,8 +950,8 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 
 - **Removed** the `DataFormat` type and its whole `Format*` enum, along with `ConvertValueByFormat`, `TypeFormatMap`, `DataFormat.GetType()`, and the `Format` field on `PortFieldData` / `PortFieldSchema`. Wire payloads and schemas now carry `type` and `value` only.
 - **Value API is now type-based.** Use `ConvertValueByType(value string, t DataType) (any, error)` and `func (DataType) CanConvertTo(DataType) bool`. `ConvertAnyValue` now returns `(string, DataType, error)`.
-- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; publish `time.Time` as RFC3339 text into a `string` field yourself. `base64` is replaced by the `raw` type (`[]byte`, base64-encoded on the wire; `raw` only converts to `raw`).
-- **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they decode to `map[string]any` / `[]any` on the reader side and do not cross-convert to any other type.
+- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; publish `time.Time` as RFC3339 text into a `string` field yourself. `base64` is replaced by the `raw` type. `raw` is `[]byte` in **both** directions — inbound handlers read `[]byte` from `msg.Data`, and `Publish` accepts `[]byte` (the SDK base64-encodes it on the wire); `raw` only converts to `raw`.
+- **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they do not cross-convert to any other type. Inbound they decode to `map[string]any` / `[]any` by default (or `json.RawMessage` with `UseRawJson()`). Outbound, `Publish` accepts exactly three Go forms for a json field: `map[string]any` and `[]any` (SDK-marshaled), and `json.RawMessage` (strict-validated, then written verbatim so big integers keep full precision). Structs are not auto-marshaled — marshal to `json.RawMessage` yourself.
 - **Added** the `(*App).UseRawJson()` option. When set, inbound `jsonObject` / `jsonArray` fields are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
 - **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 

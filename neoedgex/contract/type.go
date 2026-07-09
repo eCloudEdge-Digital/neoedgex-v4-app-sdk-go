@@ -1,6 +1,9 @@
 package contract
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // 基礎 type 名稱常數。
 type DataType string
@@ -40,7 +43,7 @@ var SupportedTypes = map[DataType]struct{}{
 }
 
 func GetDataType(anyValue any) DataType {
-	switch anyValue.(type) {
+	switch value := anyValue.(type) {
 	case bool:
 		return TypeBool
 	case int16:
@@ -61,11 +64,38 @@ func GetDataType(anyValue any) DataType {
 		return TypeDouble
 	case string, time.Time:
 		return TypeString
+	// json.RawMessage is a named []byte type; it must be matched before []byte and
+	// is classified by sniffing the first non-whitespace byte ('{' object, '[' array).
+	case json.RawMessage:
+		return sniffJsonShape(value)
 	case []byte:
 		return TypeRaw
+	case map[string]any:
+		return TypeJsonObject
+	case []any:
+		return TypeJsonArray
 	default:
 		return TypeUndefined
 	}
+}
+
+// sniffJsonShape classifies a json.RawMessage by its first non-whitespace byte:
+// '{' -> jsonObject, '[' -> jsonArray, anything else (incl. empty) -> undefined.
+// Full well-formedness/shape validation happens later in ConvertAnyValue.
+func sniffJsonShape(raw json.RawMessage) DataType {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return TypeJsonObject
+		case '[':
+			return TypeJsonArray
+		default:
+			return TypeUndefined
+		}
+	}
+	return TypeUndefined
 }
 
 func (dataType DataType) IsNumber() bool {

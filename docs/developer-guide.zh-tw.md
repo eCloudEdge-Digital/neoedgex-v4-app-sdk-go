@@ -638,22 +638,42 @@ if err != nil {
     <tr>
       <td><code>raw</code></td>
       <td><code>[]byte</code></td>
-      <td>做 base64 encode。只允許 <code>raw</code> 轉 <code>raw</code>；沒有其他型別能轉入或轉出 <code>raw</code>。</td>
+      <td>在 wire 上做 base64 encode。只允許 <code>raw</code> 轉 <code>raw</code>；沒有其他型別能轉入或轉出 <code>raw</code>。</td>
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>其他 Go 型別都不支援。</td>
     </tr>
     <tr>
-      <td><code>jsonObject</code></td>
-      <td>JSON object <code>string</code></td>
-      <td>value 必須是能解碼成 object 的 JSON 字串；<code>null</code> 與 JSON array 會被拒絕。讀取側解碼成 <code>map[string]any</code>。</td>
-      <td><code>"{\"k\":1}" -&gt; "{\"k\":1}"</code></td>
-      <td rowspan="2">嚴格驗證，且不做跨型別轉換：<code>jsonObject</code> / <code>jsonArray</code> 欄位只接受自己對應的 JSON 形狀。</td>
+      <td rowspan="3"><code>jsonObject</code></td>
+      <td><code>map[string]any</code></td>
+      <td>SDK 會對 map 做 <code>json.Marshal</code> 後寫入 wire value。欄位必須宣告為 <code>jsonObject</code>。</td>
+      <td><code>map[string]any{"k":1} -&gt; "{\"k\":1}"</code></td>
+      <td rowspan="6">嚴格驗證，且只接受同形狀：<code>jsonObject</code> / <code>jsonArray</code> 欄位只接受自己對應的 JSON 形狀（強制 object 與 array 之分，拒絕 <code>null</code>）。struct <b>不會</b>自動 marshal——請自行 marshal 成 <code>json.RawMessage</code>。其他 Go 型別一律拒絕。</td>
     </tr>
     <tr>
-      <td><code>jsonArray</code></td>
-      <td>JSON array <code>string</code></td>
-      <td>value 必須是能解碼成 array 的 JSON 字串；<code>null</code> 與 JSON object 會被拒絕。讀取側解碼成 <code>[]any</code>。</td>
-      <td><code>"[1,2,3]" -&gt; "[1,2,3]"</code></td>
+      <td><code>json.RawMessage</code>（object）</td>
+      <td>先做嚴格驗證，再<b>逐字</b>寫入（只 trim 前後空白，不重新 marshal / compact），因此大整數可保留完整精度。形狀由第一個非空白 byte 判定。</td>
+      <td><code>json.RawMessage("{\"id\":9223372036854775807}")</code> 會逐 byte 保留。</td>
+    </tr>
+    <tr>
+      <td><code>[]any</code>（此處拒絕）</td>
+      <td>array 值不能放進 <code>jsonObject</code> 欄位。</td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><code>jsonArray</code></td>
+      <td><code>[]any</code></td>
+      <td>SDK 會對 slice 做 <code>json.Marshal</code> 後寫入 wire value。欄位必須宣告為 <code>jsonArray</code>。</td>
+      <td><code>[]any{1,2,3} -&gt; "[1,2,3]"</code></td>
+    </tr>
+    <tr>
+      <td><code>json.RawMessage</code>（array）</td>
+      <td>先做嚴格驗證，再<b>逐字</b>寫入（只 trim 前後空白），保留大整數精度。形狀由第一個非空白 byte 判定。</td>
+      <td><code>json.RawMessage("[9223372036854775807]")</code> 會逐 byte 保留。</td>
+    </tr>
+    <tr>
+      <td><code>map[string]any</code>（此處拒絕）</td>
+      <td>object 值不能放進 <code>jsonArray</code> 欄位。</td>
+      <td>—</td>
     </tr>
   </tbody>
 </table>
@@ -905,8 +925,8 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 - **移除** `DataFormat` 型別及其整個 `Format*` enum，連同 `ConvertValueByFormat`、`TypeFormatMap`、`DataFormat.GetType()`，以及 `PortFieldData` / `PortFieldSchema` 上的 `Format` 欄位。wire payload 與 schema 現在只帶 `type` 與 `value`。
 - **value API 改為 type-based。** 使用 `ConvertValueByType(value string, t DataType) (any, error)` 與 `func (DataType) CanConvertTo(DataType) bool`。`ConvertAnyValue` 現在回傳 `(string, DataType, error)`。
-- **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；要輸出時間，請自己把 `time.Time` 格式化成 RFC3339 字串再放進 `string` 欄位。`base64` 由 `raw` 型別取代（`[]byte`，在 wire 上做 base64 encode；`raw` 只能轉 `raw`）。
-- **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分；讀取側分別解碼成 `map[string]any` / `[]any`，且不與其他型別互轉。
+- **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；要輸出時間，請自己把 `time.Time` 格式化成 RFC3339 字串再放進 `string` 欄位。`base64` 由 `raw` 型別取代。`raw` 在**兩個方向**都是 `[]byte`——inbound handler 從 `msg.Data` 讀到 `[]byte`，`Publish` 也接受 `[]byte`（由 SDK 在 wire 上做 base64 encode）；`raw` 只能轉 `raw`。
+- **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分，且不與其他型別互轉。inbound 預設解碼成 `map[string]any` / `[]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`）。outbound 時，`Publish` 對 json 欄位只接受三種 Go 形式：`map[string]any` 與 `[]any`（由 SDK marshal），以及 `json.RawMessage`（先嚴格驗證，再逐字寫入，讓大整數保留完整精度）。struct 不會自動 marshal——請自行 marshal 成 `json.RawMessage`。
 - **新增** `(*App).UseRawJson()` 選項。啟用後，inbound 的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`，可保留大整數精度並在 forwarder 中逐字重新 marshal。驗證行為不變；非 JSON 型別不受影響。
 - **遷移。** 所有欄位改為只用 `DataType` 描述，並移除 schema 與 payload 中所有 `format` 欄位。把 `ConvertValueByFormat` 呼叫改成 `ConvertValueByType`，並以 `DataType.CanConvertTo` 判斷是否可轉換。
 
