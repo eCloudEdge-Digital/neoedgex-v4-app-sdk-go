@@ -6,19 +6,19 @@
         "name": "custom-httpclient-env-node",
         "inputs": {
           "input1": [
-            { "key": "temperature", "type": "int32", "format": "int32" }
+            { "key": "temperature", "type": "int32" }
           ],
           "input2": [
-            { "key": "running", "type": "bool", "format": "bool" }
+            { "key": "running", "type": "bool" }
           ],
           "input3": [
-            { "key": "message", "type": "string", "format": "string" }
+            { "key": "message", "type": "string" }
           ]
         },
         "outputs": {
           "output1": [
-            { "key": "api_path", "type": "string", "format": "string" },
-            { "key": "response_status", "type": "int32", "format": "int32" }
+            { "key": "api_path", "type": "string" },
+            { "key": "response_status", "type": "int32" }
           ]
         }
       }
@@ -31,21 +31,21 @@
         "nodeID": "custom-httpclient-env-node",
         "handle": "input1",
         "data": {
-          "temperature": { "type": "int32", "format": "int32", "value": "25" }
+          "temperature": { "type": "int32", "value": "25" }
         }
       },
       {
         "nodeID": "custom-httpclient-env-node",
         "handle": "input2",
         "data": {
-          "running": { "type": "bool", "format": "bool", "value": "true" }
+          "running": { "type": "bool", "value": "true" }
         }
       },
       {
         "nodeID": "custom-httpclient-env-node",
         "handle": "input3",
         "data": {
-          "message": { "type": "string", "format": "string", "value": "hello" }
+          "message": { "type": "string", "value": "hello" }
         }
       }
     ]

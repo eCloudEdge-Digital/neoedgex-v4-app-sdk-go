@@ -114,13 +114,13 @@ input schema 定義在 `config.data.inputs`：
 {
   "inputs": {
     "input1": [
-      { "key": "temperature", "type": "double", "format": "double" }
+      { "key": "temperature", "type": "double" }
     ],
     "input2": [
-      { "key": "running", "type": "bool", "format": "bool" }
+      { "key": "running", "type": "bool" }
     ],
     "input3": [
-      { "key": "capturedAt", "type": "string", "format": "datetime" }
+      { "key": "capturedAt", "type": "string" }
     ]
   }
 }
@@ -132,10 +132,9 @@ input schema 定義在 `config.data.inputs`：
 input schema 描述 handler 從 `ctx.Messages()` 讀到的欄位。每個欄位包含：
 
 - `key`：出現在 `msg.Data` 裡的欄位名稱
-- `type`：欄位的基本資料型態
-- `format`：該欄位的具體表示方式
+- `type`：欄位的資料型態，完整決定解碼後的 Go 值
 
-實際的 Go 型別由 SDK 解碼決定。
+實際的 Go 型別由 SDK 依 `type` 解碼決定。
 
 ### Output Schema
 
@@ -145,8 +144,8 @@ output schema 定義在 `config.data.outputs`：
 {
   "outputs": {
     "output1": [
-      { "key": "power", "type": "double", "format": "double" },
-      { "key": "status", "type": "string", "format": "string" }
+      { "key": "power", "type": "double" },
+      { "key": "status", "type": "string" }
     ]
   }
 }
@@ -157,8 +156,8 @@ output schema 定義在 `config.data.outputs`：
 這份 schema 決定 `ctx.Publish(handle, map[string]any{...})` 的驗證與轉換行為：
 
 - publish 的 map key 需和該 `handle` 所定義的 key 一致
-- destination `format` 決定可接受哪些 Go 值，以及如何轉換
-- schema 中被省略或為 `nil` 的欄位，SDK 補空欄位（`type=""`、`format=""`、`value=""`）
+- destination `type` 決定可接受哪些 Go 值，以及如何轉換
+- schema 中被省略或為 `nil` 的欄位，SDK 補空欄位（`type=""`、`value=""`）
 
 新增、刪除或改名欄位後，需同步更新 `ctx.Publish(...)` 的呼叫。
 
@@ -430,15 +429,15 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 		case "input3":
 			// 範例：從 input3 的訊息中讀取 capturedAt 欄位
-			var capturedAt time.Time
+			var capturedAt string
 			if value, exists := msg.Data["capturedAt"]; !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 沒有定義 tag capturedAt"))
 				continue
 			} else if value == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt 沒有由上游節點成功輸出"))
 				continue
-			} else if castedValue, ok := value.(time.Time); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag capturedAt 為 datetime"))
+			} else if castedValue, ok := value.(string); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag capturedAt 為 string"))
 				continue
 			} else {
 				capturedAt = castedValue
@@ -458,24 +457,23 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 - `!exists`：tag 不在 input schema 定義中，屬於 internal error
 - `exists && value == nil`：前一個 node 未成功輸出該 tag，由 app 決定套預設值、跳過或回報 error
-- `exists && value != nil`：可進行型別判斷，Go 型別與 input schema 的 format 一致，見下表：
+- `exists && value != nil`：可進行型別判斷，Go 型別與 input schema 的 `type` 一致，見下表：
 
-| format | handler 讀到的 Go 型別 |
+| type | handler 讀到的 Go 型別 |
 | --- | --- |
 | `bool` | `bool` |
 | `int16` | `int16` |
 | `int32` | `int32` |
 | `int64` | `int64` |
-| `second` | `time.Time` |
-| `millisecond` | `time.Time` |
 | `uint16` | `uint16` |
 | `uint32` | `uint32` |
 | `uint64` | `uint64` |
 | `float` | `float32` |
 | `double` | `float64` |
 | `string` | `string` |
-| `datetime` | `time.Time` |
-| `base64` | `[]byte` |
+| `raw` | `[]byte` |
+| `jsonObject` | `map[string]any` |
+| `jsonArray` | `[]any` |
 
 ### Publish 規則
 
@@ -490,8 +488,8 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 ```go
 // output1 schema:
-// - power: type=double, format=double
-// - status: type=string, format=string
+// - power: type=double
+// - status: type=string
 
 _ = ctx.Publish("output1", map[string]any{
 	"power": 42.0,
@@ -512,12 +510,12 @@ if err != nil {
 
 ### Go 值轉換
 
-`ctx.Publish` 的轉換行為由傳入 handle 對應 schema 的 destination format 決定。
+`ctx.Publish` 的轉換行為由傳入 handle 對應 schema 的 destination type 決定。
 
 <table>
   <thead>
     <tr>
-      <th>Destination format</th>
+      <th>Destination type</th>
       <th>Go 值類別</th>
       <th>轉換規則</th>
       <th>例子</th>
@@ -556,7 +554,7 @@ if err != nil {
     </tr>
     <tr>
       <td><code>bool</code>、數字字串</td>
-      <td><code>bool</code> 轉成 <code>1</code> 或 <code>0</code>。數字字串必須能被 parse 成目標格式。</td>
+      <td><code>bool</code> 轉成 <code>1</code> 或 <code>0</code>。數字字串必須能被 parse 成目標型別。</td>
       <td>destination <code>int32</code> + <code>true -&gt; "1"</code>；destination <code>int16</code> + <code>"42" -&gt; "42"</code></td>
     </tr>
     <tr>
@@ -578,7 +576,7 @@ if err != nil {
     </tr>
     <tr>
       <td><code>bool</code>、數字字串</td>
-      <td><code>bool</code> 轉成 <code>1</code> 或 <code>0</code>。數字字串必須能被 parse 成目標格式。</td>
+      <td><code>bool</code> 轉成 <code>1</code> 或 <code>0</code>。數字字串必須能被 parse 成目標型別。</td>
       <td>destination <code>uint32</code> + <code>true -&gt; "1"</code></td>
     </tr>
     <tr>
@@ -600,39 +598,15 @@ if err != nil {
     </tr>
     <tr>
       <td><code>bool</code>、數字字串</td>
-      <td><code>bool</code> 轉成 <code>1.0</code> 或 <code>0.0</code>。數字字串必須能被 parse 成目標浮點格式。</td>
+      <td><code>bool</code> 轉成 <code>1.0</code> 或 <code>0.0</code>。數字字串必須能被 parse 成目標浮點型別。</td>
       <td>destination <code>double</code> + <code>true -&gt; "1e+00"</code>；destination <code>double</code> + <code>"3.14" -&gt; "3.14e+00"</code></td>
-    </tr>
-    <tr>
-      <td rowspan="2"><code>second</code>、<code>millisecond</code></td>
-      <td>有號整數、無號整數、浮點</td>
-      <td>浮點值會先截斷成 <code>int64</code>。接著數值會依 magnitude 推斷 epoch 單位：<code>&gt;= 1e17</code> 視為 ns、<code>&gt;= 1e14</code> 視為 us、<code>&gt;= 1e11</code> 視為 ms，其他視為 s。最後再序列化成 Unix seconds 或 Unix milliseconds。</td>
-      <td>destination <code>second</code> + <code>float64(1711094400.9)</code> 會先截斷</td>
-      <td rowspan="2">destination time formats 不接受普通 <code>string</code>。</td>
-    </tr>
-    <tr>
-      <td><code>time.Time</code></td>
-      <td>依 destination format 直接轉成 Unix seconds 或 Unix milliseconds。</td>
-      <td>destination <code>millisecond</code> + <code>time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC)</code> 會序列化成 Unix milliseconds</td>
-    </tr>
-    <tr>
-      <td rowspan="2"><code>datetime</code></td>
-      <td>有號整數、無號整數、浮點</td>
-      <td>浮點值會先截斷成 <code>int64</code>。接著數值會依 magnitude 推斷 epoch 單位：<code>&gt;= 1e17</code> 視為 ns、<code>&gt;= 1e14</code> 視為 us、<code>&gt;= 1e11</code> 視為 ms，其他視為 s。最後會序列化成 RFC3339。</td>
-      <td>destination <code>datetime</code> + <code>int64(1711094400)</code> 會轉成 <code>"2024-03-22T00:00:00Z"</code></td>
-      <td rowspan="2">destination <code>datetime</code> 不接受普通 <code>string</code>。</td>
-    </tr>
-    <tr>
-      <td><code>time.Time</code></td>
-      <td>直接轉成 RFC3339，例如 <code>2026-03-22T10:30:00Z</code>。</td>
-      <td>destination <code>datetime</code> + <code>time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC) -&gt; "2026-03-22T10:30:00Z"</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>string</code></td>
       <td><code>string</code></td>
       <td>原樣保留。</td>
       <td><code>"neoedgex" -&gt; "neoedgex"</code></td>
-      <td rowspan="4"><code>time.Time</code> 不會自動轉成 plain <code>string</code>；若要輸出時間文字，schema 應該用 <code>datetime</code>。</td>
+      <td rowspan="4">不接受 <code>time.Time</code> 與 <code>[]byte</code>；若要輸出時間文字，請在 handler 內先把 <code>time.Time</code> 格式化成 RFC3339 字串再 publish 到 <code>string</code> 欄位。</td>
     </tr>
     <tr>
       <td>有號整數、無號整數</td>
@@ -650,21 +624,34 @@ if err != nil {
       <td><code>true -&gt; "true"</code></td>
     </tr>
     <tr>
-      <td><code>base64</code></td>
+      <td><code>raw</code></td>
       <td><code>[]byte</code></td>
-      <td>做 base64 encode。</td>
+      <td>做 base64 encode。只允許 <code>raw</code> 轉 <code>raw</code>；沒有其他型別能轉入或轉出 <code>raw</code>。</td>
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>其他 Go 型別都不支援。</td>
+    </tr>
+    <tr>
+      <td><code>jsonObject</code></td>
+      <td>JSON object <code>string</code></td>
+      <td>value 必須是能解碼成 object 的 JSON 字串；<code>null</code> 與 JSON array 會被拒絕。讀取側解碼成 <code>map[string]any</code>。</td>
+      <td><code>"{\"k\":1}" -&gt; "{\"k\":1}"</code></td>
+      <td rowspan="2">嚴格驗證，且不做跨型別轉換：<code>jsonObject</code> / <code>jsonArray</code> 欄位只接受自己對應的 JSON 形狀。</td>
+    </tr>
+    <tr>
+      <td><code>jsonArray</code></td>
+      <td>JSON array <code>string</code></td>
+      <td>value 必須是能解碼成 array 的 JSON 字串；<code>null</code> 與 JSON object 會被拒絕。讀取側解碼成 <code>[]any</code>。</td>
+      <td><code>"[1,2,3]" -&gt; "[1,2,3]"</code></td>
     </tr>
   </tbody>
 </table>
 
-SDK 依據 Go 值與 schema 的 destination format 決定是否可轉換。
+SDK 依據 Go 值與 schema 的 destination type 決定是否可轉換。
 
 假設 `output1` schema 定義了這個欄位：
 
 ```text
-- enabled: type=bool, format=bool
+- enabled: type=bool
 ```
 
 如果你這樣 publish：
@@ -692,12 +679,12 @@ err := ctx.Publish("output1", map[string]any{
 以下是完整的 end-to-end 範例，說明 Go 值如何從 handler 流向下游節點。假設 `output1` schema 定義如下：
 
 ```text
-- temperature: type=double, format=double
-- running: type=bool, format=bool
-- capturedAt: type=string, format=datetime
+- temperature: type=double
+- running: type=bool
+- capturedAt: type=string
 ```
 
-handler 發布 Go 值：
+handler 發布 Go 值。`string` 欄位預期收到 Go `string`；`time.Time` 請自己先格式化成 RFC3339 字串再 publish：
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
@@ -705,7 +692,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
-			"capturedAt":  time.Now(),
+			"capturedAt":  time.Now().Format(time.RFC3339),
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}
@@ -713,7 +700,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-SDK 在 publisher 這一側轉成以下 output payload：
+SDK 在 publisher 這一側轉成以下 output payload，每個欄位只帶 `type` 與 `value`：
 
 ```json
 {
@@ -721,24 +708,21 @@ SDK 在 publisher 這一側轉成以下 output payload：
   "data": {
     "temperature": {
       "type": "double",
-      "format": "double",
       "value": "2.55e+01"
     },
     "running": {
       "type": "bool",
-      "format": "bool",
       "value": "true"
     },
     "capturedAt": {
       "type": "string",
-      "format": "datetime",
       "value": "2026-03-22T10:30:00Z"
     }
   }
 }
 ```
 
-下游 node 在 `input1` 收到後，SDK 解碼完成，handler 看到的 `neoedgex.Message` 為：
+下游 node 在 `input1` 收到後，SDK 解碼完成，handler 看到的 `neoedgex.Message` 為（`string` 欄位解碼成 Go `string`）：
 
 ```go
 neoedgex.Message{
@@ -748,7 +732,7 @@ neoedgex.Message{
 	Data: map[string]any{
 		"temperature": 25.5,
 		"running":     true,
-		"capturedAt":  time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC),
+		"capturedAt":  "2026-03-22T10:30:00Z",
 	},
 }
 ```
@@ -794,17 +778,17 @@ func main() {
         "name": "demo-node",
         "inputs": {
           "input1": [
-            { "key": "temperature", "type": "double", "format": "double" }
+            { "key": "temperature", "type": "double" }
           ]
         },
         "outputs": {
           "output1": [
-            { "key": "value", "type": "string", "format": "string" }
+            { "key": "value", "type": "string" }
           ]
         },
         "application": {
           "key": "demo-app",
-          "version": "1.1.1"
+          "version": "2.0.0"
         },
         "settings": {}
       }
@@ -819,7 +803,6 @@ func main() {
         "data": {
           "temperature": {
             "type": "double",
-            "format": "double",
             "value": "2.55e+01"
           }
         }
@@ -903,6 +886,16 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 ## 版本變更紀錄
 
 本 SDK 遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。最新版本列在最前面。
+
+### v2.0.0 — 2026-07-09
+
+**BREAKING。** tag、parameter、port 欄位現在只用 `type` 描述，獨立的 `format` 概念已移除。
+
+- **移除** `DataFormat` 型別及其整個 `Format*` enum，連同 `ConvertValueByFormat`、`TypeFormatMap`、`DataFormat.GetType()`，以及 `PortFieldData` / `PortFieldSchema` 上的 `Format` 欄位。wire payload 與 schema 現在只帶 `type` 與 `value`。
+- **value API 改為 type-based。** 使用 `ConvertValueByType(value string, t DataType) (any, error)` 與 `func (DataType) CanConvertTo(DataType) bool`。`ConvertAnyValue` 現在回傳 `(string, DataType, error)`。
+- **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；要輸出時間，請自己把 `time.Time` 格式化成 RFC3339 字串再放進 `string` 欄位。`base64` 由 `raw` 型別取代（`[]byte`，在 wire 上做 base64 encode；`raw` 只能轉 `raw`）。
+- **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分；讀取側分別解碼成 `map[string]any` / `[]any`，且不與其他型別互轉。
+- **遷移。** 所有欄位改為只用 `DataType` 描述，並移除 schema 與 payload 中所有 `format` 欄位。把 `ConvertValueByFormat` 呼叫改成 `ConvertValueByType`，並以 `DataType.CanConvertTo` 判斷是否可轉換。
 
 ### v1.1.1 — 2026-06-29
 

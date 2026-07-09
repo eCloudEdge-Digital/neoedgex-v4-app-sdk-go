@@ -114,13 +114,13 @@ Custom App input handles live under `config.data.inputs`. A node can declare mul
 {
   "inputs": {
     "input1": [
-      { "key": "temperature", "type": "double", "format": "double" }
+      { "key": "temperature", "type": "double" }
     ],
     "input2": [
-      { "key": "running", "type": "bool", "format": "bool" }
+      { "key": "running", "type": "bool" }
     ],
     "input3": [
-      { "key": "capturedAt", "type": "string", "format": "datetime" }
+      { "key": "capturedAt", "type": "string" }
     ]
   }
 }
@@ -131,8 +131,7 @@ The handler uses `msg.Handle` to tell which input the message came from.
 Input schema describes which fields your handler expects to read from `ctx.Messages()`. Each field defines:
 
 - `key`: the field name that will appear in `msg.Data`
-- `type`: the coarse NeoFlow data category
-- `format`: the concrete representation of that field
+- `type`: the field data type, which fully determines the decoded Go value
 
 When you adjust the input schema, you are changing which keys the SDK will decode into `neoedgex.Message.Data` for that handle. The keys your handler reads should stay aligned with this definition, and the resulting Go value type comes from the SDK's decode result.
 
@@ -146,8 +145,8 @@ Custom App output handles live under `config.data.outputs`. The most common shap
 {
   "outputs": {
     "output1": [
-      { "key": "power", "type": "double", "format": "double" },
-      { "key": "status", "type": "string", "format": "string" }
+      { "key": "power", "type": "double" },
+      { "key": "status", "type": "string" }
     ]
   }
 }
@@ -158,8 +157,8 @@ A node can declare multiple output handles, each with its own field schema; the 
 This schema controls how `ctx.Publish(handle, map[string]any{...})` is validated and converted:
 
 - your published map keys should match the keys defined under that `handle`
-- the destination `format` determines which Go values are accepted and how they are converted
-- omitted schema fields are filled with an empty field serialized as `type=""`, `format=""`, and `value=""`
+- the destination `type` determines which Go values are accepted and how they are converted
+- omitted schema fields are filled with an empty field serialized as `type=""` and `value=""`
 - explicit `nil` values are also published as empty fields
 
 If you add, remove, or rename output fields here, update your `ctx.Publish(...)` call to match.
@@ -446,15 +445,15 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 		case "input3":
 			// Example: read capturedAt from the input3 message.
-			var capturedAt time.Time
+			var capturedAt string
 			if value, exists := msg.Data["capturedAt"]; !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt"))
 				continue
 			} else if value == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt was not successfully produced by the upstream node"))
 				continue
-			} else if castedValue, ok := value.(time.Time); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt as datetime"))
+			} else if castedValue, ok := value.(string); !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt as string"))
 				continue
 			} else {
 				capturedAt = castedValue
@@ -474,24 +473,23 @@ Treat `msg.Data` with this fixed meaning:
 
 - `!exists`: your app is trying to read a tag that is not defined in the input schema, so treat it as an internal error
 - `exists && value == nil`: the previous node did not successfully produce that tag; whether to apply a default, skip, or report a process error is up to your app
-- `exists && value != nil`: proceed with the normal Go type assertion and business logic; the value type will always match the tag format in the input schema, as shown below:
+- `exists && value != nil`: proceed with the normal Go type assertion and business logic; the value type will always match the tag `type` in the input schema, as shown below:
 
-| format | Go type seen by the handler |
+| type | Go type seen by the handler |
 | --- | --- |
 | `bool` | `bool` |
 | `int16` | `int16` |
 | `int32` | `int32` |
 | `int64` | `int64` |
-| `second` | `time.Time` |
-| `millisecond` | `time.Time` |
 | `uint16` | `uint16` |
 | `uint32` | `uint32` |
 | `uint64` | `uint64` |
 | `float` | `float32` |
 | `double` | `float64` |
 | `string` | `string` |
-| `datetime` | `time.Time` |
-| `base64` | `[]byte` |
+| `raw` | `[]byte` |
+| `jsonObject` | `map[string]any` |
+| `jsonArray` | `[]any` |
 
 ### Publish Rules
 
@@ -507,8 +505,8 @@ Concrete example for missing output fields:
 
 ```go
 // output1 schema:
-// - power: type=double, format=double
-// - status: type=string, format=string
+// - power: type=double
+// - status: type=string
 
 _ = ctx.Publish("output1", map[string]any{
 	"power": 42.0,
@@ -533,12 +531,12 @@ This means you are explicitly publishing `status` as an empty field. Omitting `s
 
 ### Go Value Conversion
 
-When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, conversion is controlled by the destination format defined under that handle's schema.
+When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, conversion is controlled by the destination type defined under that handle's schema.
 
 <table>
   <thead>
     <tr>
-      <th>Destination format</th>
+      <th>Destination type</th>
       <th>Go value category</th>
       <th>Conversion rule</th>
       <th>Example</th>
@@ -577,7 +575,7 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
-      <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination format.</td>
+      <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination type.</td>
       <td>destination <code>int32</code> + <code>true -&gt; "1"</code>; destination <code>int16</code> + <code>"42" -&gt; "42"</code></td>
     </tr>
     <tr>
@@ -599,7 +597,7 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
-      <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination format.</td>
+      <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination type.</td>
       <td>destination <code>uint32</code> + <code>true -&gt; "1"</code></td>
     </tr>
     <tr>
@@ -621,39 +619,15 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
-      <td><code>bool</code> becomes <code>1.0</code> or <code>0.0</code>. Numeric strings must parse as the exact destination float format.</td>
+      <td><code>bool</code> becomes <code>1.0</code> or <code>0.0</code>. Numeric strings must parse as the exact destination float type.</td>
       <td>destination <code>double</code> + <code>true -&gt; "1e+00"</code>; destination <code>double</code> + <code>"3.14" -&gt; "3.14e+00"</code></td>
-    </tr>
-    <tr>
-      <td rowspan="2"><code>second</code>, <code>millisecond</code></td>
-      <td>signed integers, unsigned integers, floats</td>
-      <td>Floats are truncated to <code>int64</code> first. Numeric values are then interpreted by magnitude: <code>&gt;= 1e17</code> as ns, <code>&gt;= 1e14</code> as us, <code>&gt;= 1e11</code> as ms, otherwise as s. The resulting time is then serialized as Unix seconds or Unix milliseconds.</td>
-      <td>destination <code>second</code> + <code>float64(1711094400.9)</code> truncates first</td>
-      <td rowspan="2">Plain <code>string</code> is not accepted for destination time formats.</td>
-    </tr>
-    <tr>
-      <td><code>time.Time</code></td>
-      <td>Converted directly to Unix seconds or Unix milliseconds depending on the destination format.</td>
-      <td>destination <code>millisecond</code> + <code>time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC)</code> serializes as Unix milliseconds</td>
-    </tr>
-    <tr>
-      <td rowspan="2"><code>datetime</code></td>
-      <td>signed integers, unsigned integers, floats</td>
-      <td>Floats are truncated to <code>int64</code> first. Numeric values are then interpreted by magnitude: <code>&gt;= 1e17</code> as ns, <code>&gt;= 1e14</code> as us, <code>&gt;= 1e11</code> as ms, otherwise as s. The resulting time is serialized as RFC3339.</td>
-      <td>destination <code>datetime</code> + <code>int64(1711094400)</code> becomes <code>"2024-03-22T00:00:00Z"</code></td>
-      <td rowspan="2">Plain <code>string</code> is not accepted for destination <code>datetime</code>.</td>
-    </tr>
-    <tr>
-      <td><code>time.Time</code></td>
-      <td>Converted directly to RFC3339, for example <code>2026-03-22T10:30:00Z</code>.</td>
-      <td>destination <code>datetime</code> + <code>time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC) -&gt; "2026-03-22T10:30:00Z"</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>string</code></td>
       <td><code>string</code></td>
       <td>Kept unchanged.</td>
       <td><code>"neoedgex" -&gt; "neoedgex"</code></td>
-      <td rowspan="4"><code>time.Time</code> does not automatically convert to plain <code>string</code>; use destination format <code>datetime</code> if you want RFC3339 time text.</td>
+      <td rowspan="4"><code>time.Time</code> and <code>[]byte</code> are not accepted; format a <code>time.Time</code> as RFC3339 text in your handler before publishing to a <code>string</code> field.</td>
     </tr>
     <tr>
       <td>signed integers, unsigned integers</td>
@@ -671,21 +645,34 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
       <td><code>true -&gt; "true"</code></td>
     </tr>
     <tr>
-      <td><code>base64</code></td>
+      <td><code>raw</code></td>
       <td><code>[]byte</code></td>
-      <td>Bytes are base64-encoded.</td>
+      <td>Bytes are base64-encoded. Only <code>raw</code> to <code>raw</code> is allowed; no other type converts to or from <code>raw</code>.</td>
       <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
       <td>Other Go types are not accepted.</td>
+    </tr>
+    <tr>
+      <td><code>jsonObject</code></td>
+      <td>JSON-object <code>string</code></td>
+      <td>Value must be a JSON-encoded string that decodes to an object; <code>null</code> and JSON arrays are rejected. Decoded to <code>map[string]any</code> on the reader side.</td>
+      <td><code>"{\"k\":1}" -&gt; "{\"k\":1}"</code></td>
+      <td rowspan="2">Strict validation. No cross-type conversion: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape.</td>
+    </tr>
+    <tr>
+      <td><code>jsonArray</code></td>
+      <td>JSON-array <code>string</code></td>
+      <td>Value must be a JSON-encoded string that decodes to an array; <code>null</code> and JSON objects are rejected. Decoded to <code>[]any</code> on the reader side.</td>
+      <td><code>"[1,2,3]" -&gt; "[1,2,3]"</code></td>
     </tr>
   </tbody>
 </table>
 
-The SDK decides whether a value can be converted from the Go value and the destination format declared by the schema. As a third-party app author, you usually only need to care about whether the Go value is accepted by the destination schema format.
+The SDK decides whether a value can be converted from the Go value and the destination type declared by the schema. As a third-party app author, you usually only need to care about whether the Go value is accepted by the destination schema type.
 
 For example, assume `output1` schema defines this field:
 
 ```text
-- enabled: type=bool, format=bool
+- enabled: type=bool
 ```
 
 If you publish this:
@@ -717,12 +704,12 @@ The following is a complete end-to-end example of the publish pipeline.
 Step 1: start from the `output1` schema. For this example, assume `output1` is:
 
 ```text
-- temperature: type=double, format=double
-- running: type=bool, format=bool
-- capturedAt: type=string, format=datetime
+- temperature: type=double
+- running: type=bool
+- capturedAt: type=string
 ```
 
-Step 2: the handler can publish ordinary Go values through `ctx.Publish(...)`:
+Step 2: the handler can publish ordinary Go values through `ctx.Publish(...)`. A `string` field expects a Go `string`; format a `time.Time` as RFC3339 text yourself before publishing:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
@@ -730,7 +717,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
-			"capturedAt":  time.Now(),
+			"capturedAt":  time.Now().Format(time.RFC3339),
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}
@@ -738,7 +725,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-Step 3: on the publisher side, the SDK turns those Go values into this output payload:
+Step 3: on the publisher side, the SDK turns those Go values into this output payload. Each field carries `type` and `value` only:
 
 ```json
 {
@@ -746,24 +733,21 @@ Step 3: on the publisher side, the SDK turns those Go values into this output pa
   "data": {
     "temperature": {
       "type": "double",
-      "format": "double",
       "value": "2.55e+01"
     },
     "running": {
       "type": "bool",
-      "format": "bool",
       "value": "true"
     },
     "capturedAt": {
       "type": "string",
-      "format": "datetime",
       "value": "2026-03-22T10:30:00Z"
     }
   }
 }
 ```
 
-Step 4: when a downstream node receives that payload on its own `input1`, the SDK decodes it before delivery and the handler sees this `neoedgex.Message`:
+Step 4: when a downstream node receives that payload on its own `input1`, the SDK decodes it before delivery and the handler sees this `neoedgex.Message`. A `string` field decodes to a Go `string`:
 
 ```go
 neoedgex.Message{
@@ -773,7 +757,7 @@ neoedgex.Message{
 	Data: map[string]any{
 		"temperature": 25.5,
 		"running":     true,
-		"capturedAt":  time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC),
+		"capturedAt":  "2026-03-22T10:30:00Z",
 	},
 }
 ```
@@ -819,17 +803,17 @@ Minimal mock config shape:
         "name": "demo-node",
         "inputs": {
           "input1": [
-            { "key": "temperature", "type": "double", "format": "double" }
+            { "key": "temperature", "type": "double" }
           ]
         },
         "outputs": {
           "output1": [
-            { "key": "value", "type": "string", "format": "string" }
+            { "key": "value", "type": "string" }
           ]
         },
         "application": {
           "key": "demo-app",
-          "version": "1.1.1"
+          "version": "2.0.0"
         },
         "settings": {}
       }
@@ -844,7 +828,6 @@ Minimal mock config shape:
         "data": {
           "temperature": {
             "type": "double",
-            "format": "double",
             "value": "2.55e+01"
           }
         }
@@ -928,6 +911,16 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 ## Changelog
 
 This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Most recent releases first.
+
+### v2.0.0 — 2026-07-09
+
+**BREAKING.** A tag, parameter, or port field is now described by `type` alone; the separate `format` concept is gone.
+
+- **Removed** the `DataFormat` type and its whole `Format*` enum, along with `ConvertValueByFormat`, `TypeFormatMap`, `DataFormat.GetType()`, and the `Format` field on `PortFieldData` / `PortFieldSchema`. Wire payloads and schemas now carry `type` and `value` only.
+- **Value API is now type-based.** Use `ConvertValueByType(value string, t DataType) (any, error)` and `func (DataType) CanConvertTo(DataType) bool`. `ConvertAnyValue` now returns `(string, DataType, error)`.
+- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; publish `time.Time` as RFC3339 text into a `string` field yourself. `base64` is replaced by the `raw` type (`[]byte`, base64-encoded on the wire; `raw` only converts to `raw`).
+- **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they decode to `map[string]any` / `[]any` on the reader side and do not cross-convert to any other type.
+- **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 
 ### v1.1.1 — 2026-06-29
 

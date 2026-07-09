@@ -105,7 +105,7 @@ type NodeContext interface {
 
 - SDK 會依 `Outputs[handle]` schema 逐欄位建構 payload；handle 必須在 node config 的 Outputs 中已定義，否則 Publish 回傳 error。
 - SDK 會在最終送出的 top-level payload 加上 `timestamp`，值為 publish 當下的 RFC3339 字串。
-- 若 schema 欄位在 `data` 中缺少，SDK 會自動補上一個 empty field（序列化後是 `type=""`、`format=""`、`value=""`）。
+- 若 schema 欄位在 `data` 中缺少，SDK 會自動補上一個 empty field（序列化後是 `type=""`、`value=""`）。
 - 若 schema 欄位有提供，但 value 是 `nil`，SDK 也會自動補成 empty field。
 - 最終送出的 payload 會帶齊 schema 中的所有 output keys。
 
@@ -233,8 +233,8 @@ mock-config.json 範例：
     "type": "app",
     "data": {
       "name": "test-node",
-      "inputs":  { "input1": [{"key": "temperature", "type": "number", "format": "double"}] },
-      "outputs": { "output1": [{"key": "result", "type": "number", "format": "double"}] },
+      "inputs":  { "input1": [{"key": "temperature", "type": "double"}] },
+      "outputs": { "output1": [{"key": "result", "type": "double"}] },
       "settings": {}
     }
   }],
@@ -243,7 +243,7 @@ mock-config.json 範例：
     "messages": [{
       "nodeID": "node-1",
       "handle": "input1",
-      "data": { "temperature": {"type": "number", "format": "double", "value": "25.5"} }
+      "data": { "temperature": {"type": "double", "value": "25.5"} }
     }]
   }
 }
