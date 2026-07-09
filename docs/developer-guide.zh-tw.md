@@ -27,6 +27,7 @@ NeoEdgeX App SDK v4 是用來開發 NeoEdgeX 節點應用程式的 Go SDK，支�
 - `(*App).Run()`
 - `(*App).EnableMock(...)`
 - `(*App).DisableSDKLog()`
+- `(*App).UseRawJson()`
 - `neoedgex.LoadMockConfig(...)`
 - `neoedgex.NodeHandler`
 - `neoedgex.NodeEnv`
@@ -92,6 +93,17 @@ if err := app.Run(); err != nil {
 	log.Fatal(err)
 }
 ```
+
+預設情況下，inbound 的 `jsonObject` / `jsonArray` 欄位會在送進 handler 前先解碼成 `map[string]any` / `[]any`。Go 的 JSON decoder 會把所有 JSON 數字解成 `float64`，因此大於 2^53 的整數會遺失精度。若你的 app 必須保留原始 bytes（例如把 payload 原樣往下游轉送的 forwarder），請在 `Run()` 前呼叫 `UseRawJson()`：
+
+```go
+app := neoedgex.New(&ExampleApp{}).UseRawJson()
+if err := app.Run(); err != nil {
+	log.Fatal(err)
+}
+```
+
+呼叫 `UseRawJson()` 後，inbound 的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交給 handler，而非 `map[string]any` / `[]any`。驗證行為不變：`null`、格式錯誤的 JSON、以及型別不符（array 給 `jsonObject`、object 給 `jsonArray`）仍會被拒絕，只有交付的 Go 型別不同。由於保留了原始 bytes，大整數可維持完整精度，往下游 `Publish` 重新 marshal 時也會逐字（含巢狀數字）重現原值。非 JSON 型別不受影響。
 
 ## 如何設定 Custom App
 
@@ -472,8 +484,8 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 | `double` | `float64` |
 | `string` | `string` |
 | `raw` | `[]byte` |
-| `jsonObject` | `map[string]any` |
-| `jsonArray` | `[]any` |
+| `jsonObject` | `map[string]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`） |
+| `jsonArray` | `[]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`） |
 
 ### Publish 規則
 
@@ -895,6 +907,7 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 - **value API 改為 type-based。** 使用 `ConvertValueByType(value string, t DataType) (any, error)` 與 `func (DataType) CanConvertTo(DataType) bool`。`ConvertAnyValue` 現在回傳 `(string, DataType, error)`。
 - **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；要輸出時間，請自己把 `time.Time` 格式化成 RFC3339 字串再放進 `string` 欄位。`base64` 由 `raw` 型別取代（`[]byte`，在 wire 上做 base64 encode；`raw` 只能轉 `raw`）。
 - **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分；讀取側分別解碼成 `map[string]any` / `[]any`，且不與其他型別互轉。
+- **新增** `(*App).UseRawJson()` 選項。啟用後，inbound 的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`，可保留大整數精度並在 forwarder 中逐字重新 marshal。驗證行為不變；非 JSON 型別不受影響。
 - **遷移。** 所有欄位改為只用 `DataType` 描述，並移除 schema 與 payload 中所有 `format` 欄位。把 `ConvertValueByFormat` 呼叫改成 `ConvertValueByType`，並以 `DataType.CanConvertTo` 判斷是否可轉換。
 
 ### v1.1.1 — 2026-06-29

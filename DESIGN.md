@@ -114,7 +114,7 @@ type NodeContext interface {
 ```go
 type Message struct {
     Handle string                // 觸發的 input handle 名稱
-    Data   map[string]any        // 已解碼的資料欄位；undefined 或解碼失敗時 value 為 nil
+    Data   map[string]any        // 已解碼的資料欄位；undefined 或解碼失敗時 value 為 nil。預設 jsonObject/jsonArray 解成 map[string]any/[]any；呼叫 (*App).UseRawJson() 後改交付 json.RawMessage（保留原始 bytes，不遺失大整數精度）
     Source string                // 來源節點 ID
     Timestamp string             // 上游 publish 時間；RFC3339，若舊 payload 未提供則為空字串
 }

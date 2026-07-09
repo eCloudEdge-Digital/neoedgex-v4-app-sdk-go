@@ -27,6 +27,7 @@ These are the stable public entry points documented by this guide:
 - `(*App).Run()`
 - `(*App).EnableMock(...)`
 - `(*App).DisableSDKLog()`
+- `(*App).UseRawJson()`
 - `neoedgex.LoadMockConfig(...)`
 - `neoedgex.NodeHandler`
 - `neoedgex.NodeEnv`
@@ -92,6 +93,17 @@ if err := app.Run(); err != nil {
 	log.Fatal(err)
 }
 ```
+
+By default, inbound `jsonObject` / `jsonArray` fields are decoded into `map[string]any` / `[]any` before they reach your handler. Go's JSON decoder turns every JSON number into `float64`, so integers larger than 2^53 lose precision. If your app must preserve the original bytes — for example a forwarder that re-emits the payload downstream — call `UseRawJson()` before `Run()`:
+
+```go
+app := neoedgex.New(&ExampleApp{}).UseRawJson()
+if err := app.Run(); err != nil {
+	log.Fatal(err)
+}
+```
+
+With `UseRawJson()`, inbound `jsonObject` / `jsonArray` fields are delivered as `json.RawMessage` (the validated original bytes) instead of `map[string]any` / `[]any`. Validation is unchanged: `null`, malformed JSON, and the wrong shape (an array for a `jsonObject`, an object for a `jsonArray`) are still rejected — only the delivered Go type differs. Because the raw bytes are preserved, large integers keep full precision, and re-marshalling for a downstream `Publish` reproduces the original value verbatim, including nested numbers. Non-JSON types are unaffected.
 
 ## Configuring a Custom App
 
@@ -488,8 +500,8 @@ Treat `msg.Data` with this fixed meaning:
 | `double` | `float64` |
 | `string` | `string` |
 | `raw` | `[]byte` |
-| `jsonObject` | `map[string]any` |
-| `jsonArray` | `[]any` |
+| `jsonObject` | `map[string]any` (or `json.RawMessage` with `UseRawJson()`) |
+| `jsonArray` | `[]any` (or `json.RawMessage` with `UseRawJson()`) |
 
 ### Publish Rules
 
@@ -920,6 +932,7 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 - **Value API is now type-based.** Use `ConvertValueByType(value string, t DataType) (any, error)` and `func (DataType) CanConvertTo(DataType) bool`. `ConvertAnyValue` now returns `(string, DataType, error)`.
 - **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; publish `time.Time` as RFC3339 text into a `string` field yourself. `base64` is replaced by the `raw` type (`[]byte`, base64-encoded on the wire; `raw` only converts to `raw`).
 - **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they decode to `map[string]any` / `[]any` on the reader side and do not cross-convert to any other type.
+- **Added** the `(*App).UseRawJson()` option. When set, inbound `jsonObject` / `jsonArray` fields are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
 - **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 
 ### v1.1.1 — 2026-06-29

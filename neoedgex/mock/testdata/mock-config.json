@@ -8,12 +8,12 @@
         "description": "A test node for mock mode",
         "inputs": {
           "input1": [
-            {"key": "temperature", "type": "number", "format": "double"}
+            {"key": "temperature", "type": "double"}
           ]
         },
         "outputs": {
           "output1": [
-            {"key": "result", "type": "number", "format": "double"}
+            {"key": "result", "type": "double"}
           ]
         },
         "application": {
@@ -31,7 +31,7 @@
         "nodeID": "test-node-1",
         "handle": "input1",
         "data": {
-          "temperature": {"type": "number", "format": "double", "value": "25.5"}
+          "temperature": {"type": "double", "value": "25.5"}
         }
       }
     ]

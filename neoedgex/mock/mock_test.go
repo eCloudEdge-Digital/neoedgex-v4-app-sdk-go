@@ -46,7 +46,7 @@ func TestLoadConfig_EmptyNodes(t *testing.T) {
 func TestLoadConfig_ParsesPortFieldData(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/typed.json"
-	os.WriteFile(path, []byte(`{"nodes":[{"id":"n1","type":"app","data":{"name":"n1"}}],"mock":{"messages":[{"nodeID":"n1","handle":"input1","data":{"temperature":{"type":"number","format":"double","value":"25.5"}}}]}}`), 0644)
+	os.WriteFile(path, []byte(`{"nodes":[{"id":"n1","type":"app","data":{"name":"n1"}}],"mock":{"messages":[{"nodeID":"n1","handle":"input1","data":{"temperature":{"type":"double","value":"25.5"}}}]}}`), 0644)
 
 	config, err := LoadConfig(path)
 	if err != nil {
