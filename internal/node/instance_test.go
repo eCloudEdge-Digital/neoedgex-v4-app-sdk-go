@@ -72,7 +72,7 @@ func TestNewInstanceCreatesInstanceWithoutOptions(t *testing.T) {
 		Data: contract.NodeData{
 			Name: "demo-node",
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPublishSkipsOutputValidation(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestPublishFillsMissingOutputFieldWithEmptyField(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPublishTreatsNilFieldValueAsEmptyField(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPublishTreatsMissingAndNilFieldsEquivalently(t *testing.T) {
 					},
 				},
 			},
-		})
+		}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -267,7 +267,7 @@ func TestRunLoopSkipsInputValidation(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestRunLoopLeavesTimestampEmptyWhenInboundPayloadOmitsIt(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestPublishNodeErrorPublishesToErrorTopic(t *testing.T) {
 		ID:   "node-1",
 		Type: "demo",
 		Data: contract.NodeData{Name: "demo-node"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestDecodeIncomingDataSetsNilForUndefinedType(t *testing.T) {
 			Value: "unexpected",
 		},
 		"empty": *contract.NewEmptyField(),
-	})
+	}, false)
 
 	for _, key := range []string{"undefined-type", "empty"} {
 		if value, exists := decoded[key]; !exists || value != nil {
@@ -422,7 +422,7 @@ func TestDecodeIncomingDataSetsNilForMalformedField(t *testing.T) {
 			Type:  contract.TypeInt64,
 			Value: "not-a-number",
 		},
-	})
+	}, false)
 
 	if value, exists := decoded["broken"]; !exists || value != nil {
 		t.Fatalf("decoded malformed field = %#v", decoded)
@@ -464,7 +464,7 @@ func TestPublishWarnsWhenDataContainsTagNotInOutputSchema(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

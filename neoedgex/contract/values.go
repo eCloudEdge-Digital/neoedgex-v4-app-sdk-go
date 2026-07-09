@@ -305,6 +305,33 @@ func ConvertValueByType(value string, srcType DataType) (any, error) {
 	}
 }
 
+// ConvertValueByTypeRaw is the raw-json variant of ConvertValueByType. For
+// jsonObject/jsonArray fields it validates the value exactly as the parsed path
+// does (rejecting null, malformed json, and the wrong shape) but returns the
+// original bytes as json.RawMessage instead of a parsed map/[]any, so callers
+// that forward the payload preserve numeric precision. All other types behave
+// identically to ConvertValueByType.
+func ConvertValueByTypeRaw(value string, srcType DataType) (any, error) {
+	switch srcType {
+	case TypeJsonObject:
+		// Validate shape/well-formedness via the parsed path, then discard the
+		// parsed result and hand back the original bytes verbatim.
+		if _, err := ConvertValueByType(value, srcType); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(value), nil
+
+	case TypeJsonArray:
+		if _, err := ConvertValueByType(value, srcType); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(value), nil
+
+	default:
+		return ConvertValueByType(value, srcType)
+	}
+}
+
 // Convert values whose src type is int type to dest number type.
 func convertIntTypeToNumberType(value string, src, dest DataType) (string, error) {
 	if src == dest {

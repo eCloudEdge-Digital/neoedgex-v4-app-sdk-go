@@ -29,6 +29,7 @@ type App struct {
 	wg            sync.WaitGroup // tracks running instance goroutines
 	mockConfig    *mock.MockConfig
 	disableSDKLog bool
+	useRawJson    bool
 }
 
 // New creates a new App with the given handler.
@@ -46,6 +47,16 @@ func New(handler NodeHandler) *App {
 // 預設為開啟；呼叫此方法可讓開發者自行決定是否需要 SDK 內部 log。
 func (app *App) DisableSDKLog() *App {
 	app.disableSDKLog = true
+	return app
+}
+
+// UseRawJson 讓 inbound 的 jsonObject / jsonArray 欄位以 json.RawMessage
+// （驗證過的原始 bytes）交給 handler，而非預設的 map[string]any / []any。
+// 這可避免大整數（>2^53）在 float64 解析時遺失精度。
+// 仍會拒絕 null、格式錯誤的 json 以及型別不符（陣列給 jsonObject / 物件給
+// jsonArray），只有回傳形式不同；非 json 型別不受影響。
+func (app *App) UseRawJson() *App {
+	app.useRawJson = true
 	return app
 }
 
@@ -88,7 +99,7 @@ func (app *App) Run() error {
 	// the connection is fully established.
 	err := s.Run(func() {
 		for _, nodeConfig := range s.NodeConfigs() {
-			instance, err := internalNode.NewInstance(s, nodeConfig)
+			instance, err := internalNode.NewInstance(s, nodeConfig, app.useRawJson)
 			if err != nil {
 				appLogger.Warn("Skipping node %s: %v", nodeConfig.Data.Name, err)
 				continue

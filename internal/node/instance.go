@@ -18,9 +18,13 @@ type Instance struct {
 	messageChan chan contract.Message
 	ctx         context.Context
 	cancel      context.CancelFunc
+	useRawJson  bool
 }
 
-func NewInstance(sdk core.SDK, nodeConfig contract.Node) (*Instance, error) {
+// NewInstance creates a node instance. When useRawJson is true, inbound
+// jsonObject/jsonArray fields are delivered to the handler as json.RawMessage
+// (validated original bytes) instead of parsed map[string]any/[]any.
+func NewInstance(sdk core.SDK, nodeConfig contract.Node, useRawJson bool) (*Instance, error) {
 	if sdk == nil {
 		return nil, fmt.Errorf("sdk is nil")
 	}
@@ -36,6 +40,7 @@ func NewInstance(sdk core.SDK, nodeConfig contract.Node) (*Instance, error) {
 		messageChan: make(chan contract.Message, 4096),
 		ctx:         instanceCtx,
 		cancel:      instanceCancel,
+		useRawJson:  useRawJson,
 	}, nil
 }
 
@@ -218,14 +223,22 @@ func (instance *Instance) PublishHeartbeat() error {
 	return instance.sdk.Messenger().Publish(topic, 0, []byte{})
 }
 
-func decodeIncomingData(data map[string]contract.PortFieldData) map[string]any {
+func decodeIncomingData(data map[string]contract.PortFieldData, useRawJson bool) map[string]any {
 	decoded := make(map[string]any, len(data))
 	for key, field := range data {
 		if field.Type == contract.TypeUndefined {
 			decoded[key] = nil
 			continue
 		}
-		value, err := field.GetAnyValue()
+		var value any
+		var err error
+		if useRawJson {
+			// Raw mode: json types are validated then returned as json.RawMessage;
+			// all other types decode exactly as the default path.
+			value, err = contract.ConvertValueByTypeRaw(field.Value, field.Type)
+		} else {
+			value, err = field.GetAnyValue()
+		}
 		if err != nil {
 			decoded[key] = nil
 			continue
@@ -284,7 +297,7 @@ func (instance *Instance) runLoop() {
 				instance.logger.Info("Context done, exiting run loop")
 			case instance.messageChan <- contract.Message{
 				Handle:    payload.Handle,
-				Data:      decodeIncomingData(neoflowMessage.Data),
+				Data:      decodeIncomingData(neoflowMessage.Data, instance.useRawJson),
 				Source:    neoflowMessage.SourceNodeID,
 				Timestamp: neoflowMessage.Timestamp,
 			}:
