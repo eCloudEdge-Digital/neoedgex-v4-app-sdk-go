@@ -40,6 +40,34 @@ func NewPortFieldDataWithAny(anyValue any, destType DataType) (*PortFieldData, e
 		return nil, fmt.Errorf("nil value is not supported for conversion")
 	}
 
+	// Outbound pass-through: an app (e.g. the neoflow processor) may already hold
+	// wire-form PortFieldData and hand it straight to Publish. Accept it without
+	// a parse/re-serialize round trip so json big-int precision is untouched.
+	switch pf := anyValue.(type) {
+	case *PortFieldData:
+		// A nil *PortFieldData is already caught by isNilAnyValue above.
+		return NewPortFieldDataWithAny(*pf, destType)
+	case PortFieldData:
+		// TypeUndefined (e.g. a NewEmptyField product) is treated exactly like a
+		// nil value: it goes out as an empty field, no error. Publish's nil
+		// pre-filter only catches Go-level nils, so a non-nil empty-typed
+		// PortFieldData reaches here; owning the case in the constructor keeps all
+		// PortFieldData semantics in one seam.
+		if pf.Type == TypeUndefined {
+			return NewEmptyField(), nil
+		}
+		// Validate the embedded value against its own type, then use the ORIGINAL
+		// string verbatim (the parsed result is discarded; for json types this is
+		// validation-only, so numeric precision and key order are preserved).
+		if _, err := ConvertValueByType(pf.Value, pf.Type); err != nil {
+			return nil, fmt.Errorf("value '%s' is not compatible with type '%s': %v", pf.Value, pf.Type, err)
+		}
+		// Route through the existing conversion matrix: same-type hits the verbatim
+		// early return (byte-exact), cross-type uses CanConvertTo (json cross-type
+		// is naturally denied). No new conversion rules.
+		return pf.ConvertTo(destType)
+	}
+
 	value, srcType, err := ConvertAnyValue(anyValue)
 	if err != nil {
 		return nil, err

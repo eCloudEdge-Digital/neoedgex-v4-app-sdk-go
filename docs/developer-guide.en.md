@@ -94,7 +94,7 @@ if err := app.Run(); err != nil {
 }
 ```
 
-By default, inbound `jsonObject` / `jsonArray` fields are decoded into `map[string]any` / `[]any` before they reach your handler. Go's JSON decoder turns every JSON number into `float64`, so integers larger than 2^53 lose precision. If your app must preserve the original bytes — for example a forwarder that re-emits the payload downstream — call `UseRawJson()` before `Run()`:
+By default, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are decoded into `map[string]any` / `[]any` before they reach the handler. Go's JSON decoder turns every JSON number into `float64`, so integers larger than 2^53 lose precision. If the app must preserve the original bytes — for example a forwarder that re-emits the payload downstream — call `UseRawJson()` before `Run()`:
 
 ```go
 app := neoedgex.New(&ExampleApp{}).UseRawJson()
@@ -103,7 +103,7 @@ if err := app.Run(); err != nil {
 }
 ```
 
-With `UseRawJson()`, inbound `jsonObject` / `jsonArray` fields are delivered as `json.RawMessage` (the validated original bytes) instead of `map[string]any` / `[]any`. Validation is unchanged: `null`, malformed JSON, and the wrong shape (an array for a `jsonObject`, an object for a `jsonArray`) are still rejected — only the delivered Go type differs. Because the raw bytes are preserved, large integers keep full precision, and re-marshalling for a downstream `Publish` reproduces the original value verbatim, including nested numbers. Non-JSON types are unaffected.
+With `UseRawJson()`, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are delivered as `json.RawMessage` (the validated original bytes) instead of `map[string]any` / `[]any`. Validation is unchanged: `null`, malformed JSON, and the wrong shape (an array for a `jsonObject`, an object for a `jsonArray`) are still rejected — only the delivered Go type differs. Because the raw bytes are preserved, large integers keep full precision, and re-marshalling for a downstream `Publish` reproduces the original value verbatim, including nested numbers. Non-JSON types are unaffected.
 
 ## Configuring a Custom App
 
@@ -372,7 +372,7 @@ Each handler receives a `neoedgex.NodeEnv`.
 `neoedgex.Message` contains:
 
 - `Handle`: which input handle triggered this message
-- `Data`: a `map[string]any` containing native Go values decoded from inbound NeoFlow fields
+- `Data`: a `map[string]any` containing native Go values decoded from the input NeoFlow fields
 - `Source`: source node ID
 - `Timestamp`: upstream publish time in RFC3339 format; empty string when the upstream payload does not provide it
 
@@ -382,7 +382,7 @@ The `msg.Data` you read in the handler already contains native Go values.
 
 First dispatch on `msg.Handle` to know which input the message came from, then check whether each expected key exists and whether the value is `nil`.
 
-Assume the handler receives the following three input payloads in sequence:
+Consider one input payload carrying a scalar, a `jsonObject`, and a `jsonArray` field. The Go value for each field in `msg.Data` is shown below (`jsonObject` is a `map[string]any`, `jsonArray` is a `[]any`; both become `json.RawMessage` when `UseRawJson()` is enabled):
 
 ```go
 neoedgex.Message{
@@ -391,87 +391,33 @@ neoedgex.Message{
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
 		"temperature": 25.5,
-	},
-}
-neoedgex.Message{
-	Handle:    "input2",
-	Source:    "upstream-node",
-	Timestamp: "2026-03-31T09:10:11Z",
-	Data: map[string]any{
-		"running": true,
-	},
-}
-neoedgex.Message{
-	Handle:    "input3",
-	Source:    "upstream-node",
-	Timestamp: "2026-03-31T09:10:11Z",
-	Data: map[string]any{
-		"capturedAt": nil,
+		"payload":     map[string]any{"unit": "C"},
+		"samples":     []any{1.0, 2.0, 3.0},
 	},
 }
 ```
 
-Inside the handler, dispatch and read like this:
+Apply the same defensive pattern to each field: check whether the key exists, then whether the value is `nil`, then type-assert. Using `temperature`:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for msg := range ctx.Messages() {
-		// Example: dispatch on msg.Handle to the matching input branch.
 		switch msg.Handle {
 		case "input1":
-			// Example: read temperature from the input1 message.
 			var temperature float64
 			if value, exists := msg.Data["temperature"]; !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema does not define tag temperature"))
 				continue
 			} else if value == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature was not successfully produced by the upstream node"))
-				// Or choose to provide a default value instead.
 				continue
 			} else if castedValue, ok := value.(float64); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema does not define tag temperature as float64"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: tag temperature has an unexpected type, expected float64"))
 				continue
 			} else {
 				temperature = castedValue
 			}
 			_ = temperature
-			// ...
-
-		case "input2":
-			// Example: read running from the input2 message.
-			var running bool
-			if value, exists := msg.Data["running"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema does not define tag running"))
-				continue
-			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running was not successfully produced by the upstream node"))
-				continue
-			} else if castedValue, ok := value.(bool); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema does not define tag running as bool"))
-				continue
-			} else {
-				running = castedValue
-			}
-			_ = running
-			// ...
-
-		case "input3":
-			// Example: read capturedAt from the input3 message.
-			var capturedAt string
-			if value, exists := msg.Data["capturedAt"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt"))
-				continue
-			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt was not successfully produced by the upstream node"))
-				continue
-			} else if castedValue, ok := value.(string); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema does not define tag capturedAt as string"))
-				continue
-			} else {
-				capturedAt = castedValue
-			}
-			_ = capturedAt
-			// ...
 
 		default:
 			// Handle not defined in the schema: ignore it.
@@ -479,6 +425,16 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		}
 	}
 }
+```
+
+Other types follow the same flow with a different target type in the assertion. For a `jsonObject` field, the assertion differs between the default mode and `UseRawJson()`:
+
+```go
+// Default: a jsonObject is delivered as map[string]any
+payload, ok := msg.Data["payload"].(map[string]any)
+
+// With UseRawJson(): a jsonObject is delivered as json.RawMessage
+raw, ok := msg.Data["payload"].(json.RawMessage)
 ```
 
 Treat `msg.Data` with this fixed meaning:
@@ -639,7 +595,7 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
       <td><code>string</code></td>
       <td>Kept unchanged.</td>
       <td><code>"neoedgex" -&gt; "neoedgex"</code></td>
-      <td rowspan="4"><code>time.Time</code> and <code>[]byte</code> are not accepted; format a <code>time.Time</code> as RFC3339 text in your handler before publishing to a <code>string</code> field.</td>
+      <td rowspan="4"><code>time.Time</code> and <code>[]byte</code> are not accepted.</td>
     </tr>
     <tr>
       <td>signed integers, unsigned integers</td>
@@ -668,7 +624,7 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
       <td><code>map[string]any</code></td>
       <td>The SDK <code>json.Marshal</code>s the map to the wire value. The field must be declared <code>jsonObject</code>.</td>
       <td><code>map[string]any{"k":1} -&gt; "{\"k\":1}"</code></td>
-      <td rowspan="6">Strict validation. Same-shape only: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape (object vs array is enforced, <code>null</code> is rejected). Structs are <b>not</b> auto-marshaled — marshal to <code>json.RawMessage</code> yourself. Any other Go type is rejected.</td>
+      <td rowspan="6">Strict validation. Same-shape only: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape (object vs array is enforced, <code>null</code> is rejected). Structs are <b>not</b> auto-marshaled and must be marshaled to <code>json.RawMessage</code> by the application. Any other Go type is rejected.</td>
     </tr>
     <tr>
       <td><code>json.RawMessage</code> (object)</td>
@@ -741,7 +697,7 @@ Step 1: start from the `output1` schema. For this example, assume `output1` is:
 - capturedAt: type=string
 ```
 
-Step 2: the handler can publish ordinary Go values through `ctx.Publish(...)`. A `string` field expects a Go `string`; format a `time.Time` as RFC3339 text yourself before publishing:
+Step 2: the handler can publish ordinary Go values through `ctx.Publish(...)`. A `string` field expects a Go `string`:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
@@ -749,7 +705,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
-			"capturedAt":  time.Now().Format(time.RFC3339),
+			"capturedAt":  "2026-03-22T10:30:00Z",
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}
@@ -919,7 +875,7 @@ Important runtime rules:
 - if your handler returns early while the node is still active, the SDK treats it as abnormal and restarts it
 - if shutdown is intentional and the message channel closes, your handler should return normally
 - if your handler detects a fatal initialization error, call `ctx.ReportError(neoedgex.CodeInitializationError, err)`, then `ctx.Stop()`, then return
-- the inbound message channel has a buffer of 4096; if your handler processes messages slower than they arrive and the buffer fills up, incoming messages are dropped — the SDK internally calls `ReportError` but the dropped messages cannot be recovered
+- the incoming message channel has a buffer of 4096; if your handler processes messages slower than they arrive and the buffer fills up, incoming messages are dropped — the SDK internally calls `ReportError` but the dropped messages cannot be recovered
 - calling `ctx.Stop()` also cancels `ctx.Context()`; any HTTP clients, DB connections, worker goroutines, or other long-running work that uses `ctx.Context()` for cancellation propagation will be interrupted
 
 For example:
@@ -950,9 +906,10 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 
 - **Removed** the `DataFormat` type and its whole `Format*` enum, along with `ConvertValueByFormat`, `TypeFormatMap`, `DataFormat.GetType()`, and the `Format` field on `PortFieldData` / `PortFieldSchema`. Wire payloads and schemas now carry `type` and `value` only.
 - **Value API is now type-based.** Use `ConvertValueByType(value string, t DataType) (any, error)` and `func (DataType) CanConvertTo(DataType) bool`. `ConvertAnyValue` now returns `(string, DataType, error)`.
-- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; publish `time.Time` as RFC3339 text into a `string` field yourself. `base64` is replaced by the `raw` type. `raw` is `[]byte` in **both** directions — inbound handlers read `[]byte` from `msg.Data`, and `Publish` accepts `[]byte` (the SDK base64-encodes it on the wire); `raw` only converts to `raw`.
-- **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they do not cross-convert to any other type. Inbound they decode to `map[string]any` / `[]any` by default (or `json.RawMessage` with `UseRawJson()`). Outbound, `Publish` accepts exactly three Go forms for a json field: `map[string]any` and `[]any` (SDK-marshaled), and `json.RawMessage` (strict-validated, then written verbatim so big integers keep full precision). Structs are not auto-marshaled — marshal to `json.RawMessage` yourself.
-- **Added** the `(*App).UseRawJson()` option. When set, inbound `jsonObject` / `jsonArray` fields are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
+- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; a time value is carried in a `string` field, and its string format is decided by the application — the SDK imposes none. `base64` is replaced by the `raw` type. `raw` is `[]byte` in **both** directions — the handler reads `[]byte` from `msg.Data`, and a `[]byte` passed to `Publish` is base64-encoded on the wire by the SDK; `raw` only converts to `raw`.
+- **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they do not cross-convert to any other type. The json fields the handler reads from `Message.Data` decode to `map[string]any` / `[]any` by default (or `json.RawMessage` with `UseRawJson()`). For a json field passed to `Publish`, exactly three Go forms are accepted: `map[string]any` and `[]any` (SDK-marshaled), and `json.RawMessage` (strict-validated, then written verbatim so big integers keep full precision). Structs are not auto-marshaled and must be marshaled to `json.RawMessage` by the application.
+- **Added** the `(*App).UseRawJson()` option. When set, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
+- **Added** pre-built `PortFieldData` pass-through on `Publish`. A value in the `Publish` data map may itself be a `PortFieldData` (or `*PortFieldData`) already holding a wire-form `type`/`value`; the SDK validates the embedded value against its type, then uses it verbatim when the field type matches (byte-exact, so json big integers keep full precision) or converts it per the existing `CanConvertTo` matrix (json never cross-converts). A `TypeUndefined` (empty) `PortFieldData` behaves exactly like a `nil` value and is sent as an empty field with no error.
 - **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 
 ### v1.1.1 — 2026-06-29

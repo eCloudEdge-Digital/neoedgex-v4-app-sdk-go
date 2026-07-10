@@ -94,7 +94,7 @@ if err := app.Run(); err != nil {
 }
 ```
 
-預設情況下，inbound 的 `jsonObject` / `jsonArray` 欄位會在送進 handler 前先解碼成 `map[string]any` / `[]any`。Go 的 JSON decoder 會把所有 JSON 數字解成 `float64`，因此大於 2^53 的整數會遺失精度。若你的 app 必須保留原始 bytes（例如把 payload 原樣往下游轉送的 forwarder），請在 `Run()` 前呼叫 `UseRawJson()`：
+預設情況下，handler 自 `Message.Data` 讀到的 `jsonObject` / `jsonArray` 欄位會在送進 handler 前先解碼成 `map[string]any` / `[]any`。Go 的 JSON decoder 會把所有 JSON 數字解成 `float64`，因此大於 2^53 的整數會遺失精度。若 app 必須保留原始 bytes（例如把 payload 原樣往下游轉送的 forwarder），可在 `Run()` 前呼叫 `UseRawJson()`：
 
 ```go
 app := neoedgex.New(&ExampleApp{}).UseRawJson()
@@ -103,7 +103,7 @@ if err := app.Run(); err != nil {
 }
 ```
 
-呼叫 `UseRawJson()` 後，inbound 的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交給 handler，而非 `map[string]any` / `[]any`。驗證行為不變：`null`、格式錯誤的 JSON、以及型別不符（array 給 `jsonObject`、object 給 `jsonArray`）仍會被拒絕，只有交付的 Go 型別不同。由於保留了原始 bytes，大整數可維持完整精度，往下游 `Publish` 重新 marshal 時也會逐字（含巢狀數字）重現原值。非 JSON 型別不受影響。
+呼叫 `UseRawJson()` 後，handler 自 `Message.Data` 讀到的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`。驗證行為不變：`null`、格式錯誤的 JSON、以及型別不符（array 給 `jsonObject`、object 給 `jsonArray`）仍會被拒絕，只有交付的 Go 型別不同。由於保留了原始 bytes，大整數可維持完整精度，往下游 `Publish` 重新 marshal 時也會逐字（含巢狀數字）重現原值。非 JSON 型別不受影響。
 
 ## 如何設定 Custom App
 
@@ -330,7 +330,7 @@ if err != nil {
 - 憑證、key、secret file：通常用 file
 - 同時支援 env 與 file 時，在 app 內明確定義固定優先順序，例如 env 先、file 後
 
-SDK 不會替你決定這個優先順序；這是 app 自己的 contract，也應該在你的 app 文件中明確說明。
+SDK 不決定這個優先順序；這是 app 自身的 contract，應在 app 文件中明確說明。
 
 ## 訊息模型
 
@@ -366,7 +366,7 @@ SDK 不會替你決定這個優先順序；這是 app 自己的 contract，也�
 
 `msg.Data` 已包含 Go 原生值。讀取時需先依 `msg.Handle` 判斷訊息來自哪一個 input，再判斷欄位 key 是否存在，以及 value 是否為 `nil`。
 
-假設前述 schema 下，handler 可能依序收到下列三則 input payload：
+以一則含 scalar、`jsonObject` 與 `jsonArray` 欄位的 input payload 為例，`msg.Data` 中各欄位的 Go 值如下（`jsonObject` 為 `map[string]any`、`jsonArray` 為 `[]any`；呼叫 `UseRawJson()` 後兩者皆為 `json.RawMessage`）：
 
 ```go
 neoedgex.Message{
@@ -375,87 +375,33 @@ neoedgex.Message{
 	Timestamp: "2026-03-31T09:10:11Z",
 	Data: map[string]any{
 		"temperature": 25.5,
-	},
-}
-neoedgex.Message{
-	Handle:    "input2",
-	Source:    "upstream-node",
-	Timestamp: "2026-03-31T09:10:11Z",
-	Data: map[string]any{
-		"running": true,
-	},
-}
-neoedgex.Message{
-	Handle:    "input3",
-	Source:    "upstream-node",
-	Timestamp: "2026-03-31T09:10:11Z",
-	Data: map[string]any{
-		"capturedAt": nil,
+		"payload":     map[string]any{"unit": "C"},
+		"samples":     []any{1.0, 2.0, 3.0},
 	},
 }
 ```
 
-讀取範例：
+讀取時對每個欄位套用相同的防禦式流程：先判斷 key 是否存在，再判斷 value 是否為 `nil`，最後做型別斷言。以 `temperature` 為例：
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for msg := range ctx.Messages() {
-		// 範例：依 msg.Handle 將訊息分派到對應的 input 處理流程
 		switch msg.Handle {
 		case "input1":
-			// 範例：從 input1 的訊息中讀取 temperature 欄位
 			var temperature float64
 			if value, exists := msg.Data["temperature"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema 沒有定義 tag temperature"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema 未定義 tag temperature"))
 				continue
 			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature 沒有由上游節點成功輸出"))
-				// 或者選擇給予預設值，取決於實作者
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature 未由上游節點成功輸出"))
 				continue
 			} else if castedValue, ok := value.(float64); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema 未定義 tag temperature 為 float64"))
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: tag temperature 型別不符，預期 float64"))
 				continue
 			} else {
 				temperature = castedValue
 			}
 			_ = temperature
-			// ...
-
-		case "input2":
-			// 範例：從 input2 的訊息中讀取 running 欄位
-			var running bool
-			if value, exists := msg.Data["running"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema 沒有定義 tag running"))
-				continue
-			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running 沒有由上游節點成功輸出"))
-				continue
-			} else if castedValue, ok := value.(bool); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input2 schema 未定義 tag running 為 bool"))
-				continue
-			} else {
-				running = castedValue
-			}
-			_ = running
-			// ...
-
-		case "input3":
-			// 範例：從 input3 的訊息中讀取 capturedAt 欄位
-			var capturedAt string
-			if value, exists := msg.Data["capturedAt"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 沒有定義 tag capturedAt"))
-				continue
-			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("capturedAt 沒有由上游節點成功輸出"))
-				continue
-			} else if castedValue, ok := value.(string); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input3 schema 未定義 tag capturedAt 為 string"))
-				continue
-			} else {
-				capturedAt = castedValue
-			}
-			_ = capturedAt
-			// ...
 
 		default:
 			// 未在 schema 中定義的 handle，忽略即可
@@ -463,6 +409,16 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		}
 	}
 }
+```
+
+其他型別的斷言只是把目標 Go 型別換掉，流程相同。`jsonObject` 欄位在預設與 `UseRawJson()` 兩種模式下的斷言分別為：
+
+```go
+// 預設：jsonObject 交付為 map[string]any
+payload, ok := msg.Data["payload"].(map[string]any)
+
+// 呼叫 UseRawJson() 後：jsonObject 交付為 json.RawMessage
+raw, ok := msg.Data["payload"].(json.RawMessage)
 ```
 
 `msg.Data` 的語意：
@@ -618,7 +574,7 @@ if err != nil {
       <td><code>string</code></td>
       <td>原樣保留。</td>
       <td><code>"neoedgex" -&gt; "neoedgex"</code></td>
-      <td rowspan="4">不接受 <code>time.Time</code> 與 <code>[]byte</code>；若要輸出時間文字，請在 handler 內先把 <code>time.Time</code> 格式化成 RFC3339 字串再 publish 到 <code>string</code> 欄位。</td>
+      <td rowspan="4">不接受 <code>time.Time</code> 與 <code>[]byte</code>。</td>
     </tr>
     <tr>
       <td>有號整數、無號整數</td>
@@ -686,7 +642,7 @@ SDK 依據 Go 值與 schema 的 destination type 決定是否可轉換。
 - enabled: type=bool
 ```
 
-如果你這樣 publish：
+若這樣 publish：
 
 ```go
 err := ctx.Publish("output1", map[string]any{
@@ -696,7 +652,7 @@ err := ctx.Publish("output1", map[string]any{
 
 SDK 套用 `bool` 的 zero / non-zero 規則，`enabled` 轉成 `true`。
 
-但如果你這樣 publish：
+但若改成這樣 publish：
 
 ```go
 err := ctx.Publish("output1", map[string]any{
@@ -716,7 +672,7 @@ err := ctx.Publish("output1", map[string]any{
 - capturedAt: type=string
 ```
 
-handler 發布 Go 值。`string` 欄位預期收到 Go `string`；`time.Time` 請自己先格式化成 RFC3339 字串再 publish：
+handler 發布 Go 值。`string` 欄位預期收到 Go `string`：
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
@@ -724,7 +680,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		if err := ctx.Publish("output1", map[string]any{
 			"temperature": 25.5,
 			"running":     true,
-			"capturedAt":  time.Now().Format(time.RFC3339),
+			"capturedAt":  "2026-03-22T10:30:00Z",
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}
@@ -925,9 +881,10 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 - **移除** `DataFormat` 型別及其整個 `Format*` enum，連同 `ConvertValueByFormat`、`TypeFormatMap`、`DataFormat.GetType()`，以及 `PortFieldData` / `PortFieldSchema` 上的 `Format` 欄位。wire payload 與 schema 現在只帶 `type` 與 `value`。
 - **value API 改為 type-based。** 使用 `ConvertValueByType(value string, t DataType) (any, error)` 與 `func (DataType) CanConvertTo(DataType) bool`。`ConvertAnyValue` 現在回傳 `(string, DataType, error)`。
-- **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；要輸出時間，請自己把 `time.Time` 格式化成 RFC3339 字串再放進 `string` 欄位。`base64` 由 `raw` 型別取代。`raw` 在**兩個方向**都是 `[]byte`——inbound handler 從 `msg.Data` 讀到 `[]byte`，`Publish` 也接受 `[]byte`（由 SDK 在 wire 上做 base64 encode）；`raw` 只能轉 `raw`。
-- **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分，且不與其他型別互轉。inbound 預設解碼成 `map[string]any` / `[]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`）。outbound 時，`Publish` 對 json 欄位只接受三種 Go 形式：`map[string]any` 與 `[]any`（由 SDK marshal），以及 `json.RawMessage`（先嚴格驗證，再逐字寫入，讓大整數保留完整精度）。struct 不會自動 marshal——請自行 marshal 成 `json.RawMessage`。
-- **新增** `(*App).UseRawJson()` 選項。啟用後，inbound 的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`，可保留大整數精度並在 forwarder 中逐字重新 marshal。驗證行為不變；非 JSON 型別不受影響。
+- **移除的 format。** time format `second` / `millisecond` / `datetime` 已移除；時間值以 `string` 欄位傳遞，字串格式由應用自行決定，SDK 不作限制。`base64` 由 `raw` 型別取代。`raw` 在**兩個方向**都是 `[]byte`——handler 從 `msg.Data` 讀到 `[]byte`，傳入 `Publish` 的 `[]byte` 由 SDK 在 wire 上做 base64 encode；`raw` 只能轉 `raw`。
+- **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分，且不與其他型別互轉。handler 自 `Message.Data` 讀到的 json 欄位預設解碼成 `map[string]any` / `[]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`）。傳入 `Publish` 的 json 欄位只接受三種 Go 形式：`map[string]any` 與 `[]any`（由 SDK marshal），以及 `json.RawMessage`（先嚴格驗證，再逐字寫入，讓大整數保留完整精度）。struct 不會自動 marshal，須自行 marshal 成 `json.RawMessage`。
+- **新增** `(*App).UseRawJson()` 選項。啟用後，handler 自 `Message.Data` 讀到的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`，可保留大整數精度並在 forwarder 中逐字重新 marshal。驗證行為不變；非 JSON 型別不受影響。
+- **新增** `Publish` 支援預先建好的 `PortFieldData` 直通。`Publish` data map 中的值本身可以是已帶 wire-form `type`/`value` 的 `PortFieldData`（或 `*PortFieldData`）；SDK 會先以其型別驗證內含的 value，當欄位型別相同時逐字使用（byte-exact，json 大整數維持完整精度），型別不同則依既有的 `CanConvertTo` 矩陣轉換（json 不跨型別互轉）。`TypeUndefined`（空）的 `PortFieldData` 行為與 `nil` 值完全相同，會送出空欄位且不報錯。
 - **遷移。** 所有欄位改為只用 `DataType` 描述，並移除 schema 與 payload 中所有 `format` 欄位。把 `ConvertValueByFormat` 呼叫改成 `ConvertValueByType`，並以 `DataType.CanConvertTo` 判斷是否可轉換。
 
 ### v1.1.1 — 2026-06-29

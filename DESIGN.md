@@ -110,6 +110,7 @@ type NodeContext interface {
 - 最終送出的 payload 會帶齊 schema 中的所有 output keys。
 - `raw` 欄位在兩個方向都是 `[]byte`：inbound handler 從 `msg.Data` 讀到 `[]byte`，`Publish` 也接受 `[]byte`（SDK 在 wire 上做 base64 encode）。
 - `jsonObject` / `jsonArray` 欄位 `Publish` 只接受三種 Go 形式：`map[string]any`、`[]any`（由 SDK `json.Marshal`），以及 `json.RawMessage`（先嚴格驗證同 inbound，再逐字寫入 wire，保留大整數精度；只接受同形狀）。struct 不會自動 marshal，請自行轉成 `json.RawMessage`。轉換失敗時沿用既有語意：回報 error、該欄位送出 empty field，但訊息仍會送出。
+- `data` 中的值也可以是預先建好的 `PortFieldData`（或 `*PortFieldData`）：SDK 先以其 `type` 驗證內含 `value`，同型別直接逐字使用（byte-exact，保留 json 大整數精度），跨型別則依既有 `CanConvertTo` 矩陣轉換（json 不跨型別互轉）；`TypeUndefined` 的 `PortFieldData` 等同 `nil`，送出 empty field 且不報錯。
 
 ### `Message` — 收到的訊息
 

@@ -95,3 +95,60 @@ func TestPublishJsonFieldFailureSendsEmptyField(t *testing.T) {
 		t.Fatalf("expected empty field for failed json conversion, got type %q value %q", obj.Type, obj.Value)
 	}
 }
+
+// TestPublishPrebuiltPortFieldDataEndToEnd proves Publish accepts a pre-built
+// PortFieldData (and pointer) straight from the data map and carries the json
+// value byte-exact through the wire (big-int precision untouched, no re-parse).
+func TestPublishPrebuiltPortFieldDataEndToEnd(t *testing.T) {
+	instance, messenger := newJsonOutputInstance(t)
+
+	if err := instance.Publish("output1", map[string]any{
+		"obj": contract.PortFieldData{Type: contract.TypeJsonObject, Value: `{"id": 9223372036854775807, "b": 1}`},
+		"arr": &contract.PortFieldData{Type: contract.TypeJsonArray, Value: `[9223372036854775807, 2]`},
+	}); err != nil {
+		t.Fatalf("expected Publish to succeed, got: %v", err)
+	}
+
+	var message contract.NeoFlowMessage
+	if err := json.Unmarshal(messenger.publishedData, &message); err != nil {
+		t.Fatalf("unexpected marshal output: %v", err)
+	}
+
+	obj := message.Data["obj"]
+	if obj.Type != contract.TypeJsonObject || obj.Value != `{"id": 9223372036854775807, "b": 1}` {
+		t.Fatalf("expected obj value verbatim, got type %q value %q", obj.Type, obj.Value)
+	}
+
+	arr := message.Data["arr"]
+	if arr.Type != contract.TypeJsonArray || arr.Value != `[9223372036854775807, 2]` {
+		t.Fatalf("expected arr value verbatim, got type %q value %q", arr.Type, arr.Value)
+	}
+}
+
+// TestPublishPrebuiltUndefinedPortFieldSendsEmptyField pins Q3 at the Publish
+// seam: a pre-built TypeUndefined PortFieldData goes out as an empty field with
+// NO error reported (the published topic stays the neoflow out topic, never the
+// error topic).
+func TestPublishPrebuiltUndefinedPortFieldSendsEmptyField(t *testing.T) {
+	instance, messenger := newJsonOutputInstance(t)
+
+	if err := instance.Publish("output1", map[string]any{
+		"obj": contract.PortFieldData{Type: contract.TypeUndefined},
+	}); err != nil {
+		t.Fatalf("expected Publish to succeed, got: %v", err)
+	}
+
+	if messenger.publishedTopic != "neoedgex/neoflow/out/node-1/output1" {
+		t.Fatalf("expected out topic (no error report), got %q", messenger.publishedTopic)
+	}
+
+	var message contract.NeoFlowMessage
+	if err := json.Unmarshal(messenger.publishedData, &message); err != nil {
+		t.Fatalf("unexpected marshal output: %v", err)
+	}
+
+	obj := message.Data["obj"]
+	if obj.Type != contract.TypeUndefined || obj.Value != "" {
+		t.Fatalf("expected empty field on wire, got type %q value %q", obj.Type, obj.Value)
+	}
+}
