@@ -44,12 +44,12 @@ repo 裡可見的其他路徑不屬於對外契約，不應依賴。
 
 正式 app 請只 import 這些套件：
 
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex`
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock`
 
 測試程式可額外 import：
 
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/testutil`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/testutil`
 
 即使 repo 裡看得到其他路徑，也不要 import 內部或不穩定的實作套件。
 
@@ -63,7 +63,7 @@ package main
 import (
 	"log"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
 )
 
 type ExampleApp struct{}
@@ -735,8 +735,8 @@ package main
 import (
 	"log"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 func main() {
@@ -885,6 +885,7 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 - **新增** `jsonObject` 與 `jsonArray` DataType。其 `value` 是 JSON 編碼字串，採嚴格驗證：拒絕 `null`，並強制 object 與 array 之分，且不與其他型別互轉。handler 自 `Message.Data` 讀到的 json 欄位預設解碼成 `map[string]any` / `[]any`（呼叫 `UseRawJson()` 後為 `json.RawMessage`）。傳入 `Publish` 的 json 欄位只接受三種 Go 形式：`map[string]any` 與 `[]any`（由 SDK marshal），以及 `json.RawMessage`（先嚴格驗證，再逐字寫入，讓大整數保留完整精度）。struct 不會自動 marshal，須自行 marshal 成 `json.RawMessage`。
 - **新增** `(*App).UseRawJson()` 選項。啟用後，handler 自 `Message.Data` 讀到的 `jsonObject` / `jsonArray` 欄位會以 `json.RawMessage`（驗證過的原始 bytes）交付，而非 `map[string]any` / `[]any`，可保留大整數精度並在 forwarder 中逐字重新 marshal。驗證行為不變；非 JSON 型別不受影響。
 - **新增** `Publish` 支援預先建好的 `PortFieldData` 直通。`Publish` data map 中的值本身可以是已帶 wire-form `type`/`value` 的 `PortFieldData`（或 `*PortFieldData`）；SDK 會先以其型別驗證內含的 value，當欄位型別相同時逐字使用（byte-exact，json 大整數維持完整精度），型別不同則依既有的 `CanConvertTo` 矩陣轉換（json 不跨型別互轉）。`TypeUndefined`（空）的 `PortFieldData` 行為與 `nil` 值完全相同，會送出空欄位且不報錯。
+- **import 路徑。** 依 Go Semantic Import Versioning，模組路徑改為 `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2`。以 `go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2` 安裝，並自 `.../neoedgex-v4-app-sdk-go/v2/neoedgex` import。
 - **遷移。** 所有欄位改為只用 `DataType` 描述，並移除 schema 與 payload 中所有 `format` 欄位。把 `ConvertValueByFormat` 呼叫改成 `ConvertValueByType`，並以 `DataType.CanConvertTo` 判斷是否可轉換。
 
 ### v1.1.1 — 2026-06-29

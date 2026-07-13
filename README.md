@@ -2,10 +2,10 @@
 
 NeoEdgeX App SDK v4 is the public Go SDK for building NeoEdgeX node applications.
 
-- Module path: `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go`
+- Module path: `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2`
 - Third-party app packages:
-  - `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex`
-  - `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock`
+  - `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex`
+  - `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock`
 
 For normal app development, use the `neoedgex` package as the public SDK surface. Types such as `Node` and `Message` are available there directly.
 
@@ -17,7 +17,7 @@ Start with the external developer guides:
 Install:
 
 ```bash
-go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go
+go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2
 ```
 
 For internal architecture and implementation notes, see [DESIGN.md](./DESIGN.md).

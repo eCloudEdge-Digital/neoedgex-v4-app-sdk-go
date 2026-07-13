@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 func TestDecodeIncomingDataDefaultModeParsesJson(t *testing.T) {

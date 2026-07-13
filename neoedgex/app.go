@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sync"
 
-	internalNode "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/node"
-	internalSDK "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/sdk"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock"
+	internalNode "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/node"
+	internalSDK "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/sdk"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 // MockConfig 是 mock.MockConfig 的別名，方便使用者不需額外 import mock package。

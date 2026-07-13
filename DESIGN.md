@@ -23,7 +23,7 @@
 ```
 ┌─────────────────────────────────────────────────────┐
 │                     客戶程式碼                        │
-│  import "neoedgex-v4-app-sdk-go/neoedgex"           │
+│  import "neoedgex-v4-app-sdk-go/v2/neoedgex"           │
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
@@ -133,8 +133,8 @@ package main
 import (
     "log"
 
-    "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
-    "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock"
+    "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
+    "github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 // 實作 NodeHandler

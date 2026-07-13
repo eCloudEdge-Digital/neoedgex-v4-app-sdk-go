@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/core"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/logger"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/messenger"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/logger"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/messenger"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 const mountPath = "/opt/neoedgex"

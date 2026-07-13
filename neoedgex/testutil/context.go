@@ -5,8 +5,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/logger"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/logger"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 // MockNodeEnv is a test double for neoedgex.NodeEnv.

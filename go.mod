@@ -1,4 +1,4 @@
-module github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go
+module github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2
 
 go 1.24.2
 

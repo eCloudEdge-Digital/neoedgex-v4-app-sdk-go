@@ -1,7 +1,7 @@
 package messenger
 
 import (
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
 )
 
 type subscriptionManager struct {

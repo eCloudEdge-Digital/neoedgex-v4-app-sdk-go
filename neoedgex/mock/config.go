@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 // MockConfig 是 mock 模式的設定檔格式。

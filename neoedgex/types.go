@@ -1,7 +1,7 @@
 package neoedgex
 
 import (
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 // Node represents the raw NeoEdgeX node configuration.

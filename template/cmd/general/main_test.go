@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/testutil"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/testutil"
 )
 
 func TestExampleAppReportsMissingEndpoint(t *testing.T) {

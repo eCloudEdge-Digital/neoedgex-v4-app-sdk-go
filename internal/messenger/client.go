@@ -9,8 +9,8 @@ import (
 
 	"maps"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/core"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 type LoggerImpl struct {

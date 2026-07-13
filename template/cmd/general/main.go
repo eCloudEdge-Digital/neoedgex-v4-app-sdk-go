@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
 )
 
 type ExampleApp struct{}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
 )
 
 type noopLogger struct{}

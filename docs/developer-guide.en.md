@@ -44,12 +44,12 @@ Do **not** depend on packages outside the public SDK surface listed above, even 
 
 Production apps should import only these packages:
 
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex`
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock`
 
 Tests may also import:
 
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/testutil`
+- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/testutil`
 
 Do not import internal or unstable implementation paths even if they are visible in the repository.
 
@@ -63,7 +63,7 @@ package main
 import (
 	"log"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
 )
 
 type ExampleApp struct{}
@@ -760,8 +760,8 @@ package main
 import (
 	"log"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/mock"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 func main() {
@@ -910,6 +910,7 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 - **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they do not cross-convert to any other type. The json fields the handler reads from `Message.Data` decode to `map[string]any` / `[]any` by default (or `json.RawMessage` with `UseRawJson()`). For a json field passed to `Publish`, exactly three Go forms are accepted: `map[string]any` and `[]any` (SDK-marshaled), and `json.RawMessage` (strict-validated, then written verbatim so big integers keep full precision). Structs are not auto-marshaled and must be marshaled to `json.RawMessage` by the application.
 - **Added** the `(*App).UseRawJson()` option. When set, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
 - **Added** pre-built `PortFieldData` pass-through on `Publish`. A value in the `Publish` data map may itself be a `PortFieldData` (or `*PortFieldData`) already holding a wire-form `type`/`value`; the SDK validates the embedded value against its type, then uses it verbatim when the field type matches (byte-exact, so json big integers keep full precision) or converts it per the existing `CanConvertTo` matrix (json never cross-converts). A `TypeUndefined` (empty) `PortFieldData` behaves exactly like a `nil` value and is sent as an empty field with no error.
+- **Import path.** Per Go Semantic Import Versioning, the module path is now `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2`. Install with `go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2` and import from `.../neoedgex-v4-app-sdk-go/v2/neoedgex`.
 - **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 
 ### v1.1.1 — 2026-06-29

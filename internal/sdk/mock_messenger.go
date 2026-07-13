@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/internal/core"
-	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 // mockMessenger 是記憶體內的 MessengerClient 實作，用於 mock 模式。
