@@ -19,5 +19,3 @@ Install:
 ```bash
 go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2
 ```
-
-For internal architecture and implementation notes, see [DESIGN.md](./DESIGN.md).

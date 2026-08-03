@@ -1,29 +1,37 @@
 package contract
 
-// Node 代表一個節點，包含其資料與類型。
+// Node is one node's platform configuration, as handed to the application.
 type Node struct {
-	ID   string   `json:"id"`
+	// ID is the node's unique platform identifier.
+	ID string `json:"id"`
+	// Type is the node's platform node type.
 	Type string   `json:"type"`
 	Data NodeData `json:"data"`
 }
 
-// NodeData 詳細描述節點本身的顯示名稱、I/O 結構與參數。
+// NodeData holds a node's display information, its port schemas and its
+// user-configured settings.
 type NodeData struct {
-	Name        string                       `json:"name"`
-	Description string                       `json:"description"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Inputs and Outputs map a port handle to that port's field schema.
 	Inputs      map[string][]PortFieldSchema `json:"inputs"`
 	Outputs     map[string][]PortFieldSchema `json:"outputs"`
 	Application Application                  `json:"application"`
-	Settings    map[string]any               `json:"settings"`
+	// Settings holds the node's user-configured settings. It is decoded from
+	// JSON, so every number arrives as float64 regardless of how it was
+	// authored — a setting written as 5 type-asserts to float64, not to int.
+	Settings map[string]any `json:"settings"`
 }
 
-// PortFieldSchema 描述 inputs / outputs 裡的鍵值與型別。
+// PortFieldSchema declares one field of a port: the key it travels under on
+// the wire and the type its values are decoded into or converted to.
 type PortFieldSchema struct {
 	Key  string   `json:"key"`
 	Type DataType `json:"type"`
 }
 
-// Application 描述節點綁定的 App 與版本資訊。
+// Application identifies the app the node is bound to.
 type Application struct {
 	Key     string `json:"key"`
 	Version string `json:"version"`

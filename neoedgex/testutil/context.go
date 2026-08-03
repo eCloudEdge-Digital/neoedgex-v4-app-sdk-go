@@ -11,7 +11,19 @@ import (
 
 // MockNodeEnv is a test double for neoedgex.NodeEnv.
 // Zero value is ready to use; set fields to control behaviour.
-// All methods are safe to call concurrently.
+//
+// The intended way to feed a handler is the NewMessage/Deliver pair: NewMessage
+// builds an inbound message from the input schema in Config, so its fields
+// decode with the same schema types the runtime would give them, and Deliver
+// queues the built messages and closes the channel so the handler's receive
+// loop returns and the recordings below can be read.
+//
+// Its methods are individually safe to call concurrently, but the type as a
+// whole is not: the recording fields PublishedData, ReportedErrors and
+// StopCalled are plain exported fields, read without the mutex the methods
+// take. Reading them while a handler goroutine can still publish, report or
+// stop is a data race. Shut the handler down first — close its message channel
+// or DoneChan and wait for it to return — then assert.
 type MockNodeEnv struct {
 	// Config is returned by NodeConfig().
 	Config contract.Node

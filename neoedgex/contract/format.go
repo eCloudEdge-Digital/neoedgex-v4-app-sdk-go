@@ -1,6 +1,17 @@
 package contract
 
-// CanConvertTo 判斷來源型別是否可轉換為目標型別，維持與過往 format-based 轉換矩陣相同的允許/拒絕規則。
+// CanConvertTo reports whether a value of this type may be converted to
+// destType. The rules are:
+//
+//   - the numeric types and bool convert to any numeric type, to bool and to
+//     string;
+//   - string converts to any numeric type and to string, but not to bool —
+//     "true" is rejected, not parsed;
+//   - raw ([]byte) converts only to raw, and nothing but raw converts to raw;
+//   - TypeUndefined is accepted as neither source nor destination.
+//
+// A true result only means the pair is allowed. The conversion itself can
+// still fail on range, parsing or NaN/Inf; see ConvertToTypedValue.
 func (dataType DataType) CanConvertTo(destType DataType) bool {
 	srcType := dataType
 
@@ -32,23 +43,6 @@ func (dataType DataType) CanConvertTo(destType DataType) bool {
 	case TypeRaw:
 		switch srcType {
 		case TypeRaw:
-			return true
-		default:
-			return false
-		}
-
-	case TypeJsonObject:
-		// json fields accept their own shape only (no cross-type conversion).
-		switch srcType {
-		case TypeJsonObject:
-			return true
-		default:
-			return false
-		}
-
-	case TypeJsonArray:
-		switch srcType {
-		case TypeJsonArray:
 			return true
 		default:
 			return false

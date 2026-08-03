@@ -1,103 +1,92 @@
 package contract
 
-import (
-	"encoding/json"
-	"time"
-)
-
-// 基礎 type 名稱常數。
+// DataType is the tag type a field is declared with in a node's input or
+// output port schema. It fixes the concrete Go type the SDK decodes an inbound
+// field into and converts an outbound value to.
 type DataType string
 
+// The declarable schema types, with the Go type each one maps to.
 const (
-	TypeUndefined  DataType = ""
-	TypeBool       DataType = "bool"
-	TypeInt16      DataType = "int16"
-	TypeInt32      DataType = "int32"
-	TypeInt64      DataType = "int64"
-	TypeUint16     DataType = "uint16"
-	TypeUint32     DataType = "uint32"
-	TypeUint64     DataType = "uint64"
-	TypeFloat      DataType = "float"
-	TypeDouble     DataType = "double"
-	TypeString     DataType = "string"
-	TypeRaw        DataType = "raw"
-	TypeJsonObject DataType = "jsonObject"
-	TypeJsonArray  DataType = "jsonArray"
+	// TypeUndefined is the zero value and cannot be declared in a schema:
+	// GetDataType returns it for a value with no schema type, and every
+	// conversion rejects it as source and as destination.
+	TypeUndefined DataType = ""
+
+	TypeBool   DataType = "bool"   // bool
+	TypeInt16  DataType = "int16"  // int16
+	TypeInt32  DataType = "int32"  // int32
+	TypeInt64  DataType = "int64"  // int64
+	TypeUint16 DataType = "uint16" // uint16
+	TypeUint32 DataType = "uint32" // uint32
+	TypeUint64 DataType = "uint64" // uint64
+	TypeFloat  DataType = "float"  // float32
+	TypeDouble DataType = "double" // float64
+	TypeString DataType = "string" // string
+	TypeRaw    DataType = "raw"    // []byte
 )
 
-// SupportedTypes 用於快速驗證 type 是否受支援。
+// SupportedTypes is the set of declarable schema types, backing IsSupported.
+//
+// It is exported and mutable: writing to it changes type validation for the
+// whole process, and a write races with any concurrent IsSupported call. Treat
+// it as read-only.
 var SupportedTypes = map[DataType]struct{}{
-	TypeBool:       {},
-	TypeInt16:      {},
-	TypeInt32:      {},
-	TypeInt64:      {},
-	TypeUint16:     {},
-	TypeUint32:     {},
-	TypeUint64:     {},
-	TypeFloat:      {},
-	TypeDouble:     {},
-	TypeString:     {},
-	TypeRaw:        {},
-	TypeJsonObject: {},
-	TypeJsonArray:  {},
+	TypeBool:   {},
+	TypeInt16:  {},
+	TypeInt32:  {},
+	TypeInt64:  {},
+	TypeUint16: {},
+	TypeUint32: {},
+	TypeUint64: {},
+	TypeFloat:  {},
+	TypeDouble: {},
+	TypeString: {},
+	TypeRaw:    {},
 }
 
+// GetDataType reports the schema type of a native Go value.
+//
+// Every Go integer kind is accepted, mapped to the narrowest tag type that
+// holds its whole range: int8 and int16 to int16, uint8 and uint16 to uint16,
+// and the unsized int and uint to int64 and uint64. bool, float32, float64,
+// string and []byte map to their own tag type. Adding an integer kind here
+// only widens what the conversion path accepts as INPUT; the tag universe
+// stays the 11 scalars.
+//
+// Everything else yields TypeUndefined — nil, time.Time, and any struct, map
+// or slice other than []byte. []byte keeps mapping to raw: only the scalar
+// uint8 is an integer here, the byte slice is not.
 func GetDataType(anyValue any) DataType {
-	switch value := anyValue.(type) {
+	switch anyValue.(type) {
 	case bool:
 		return TypeBool
-	case int16:
+	case int8, int16:
 		return TypeInt16
 	case int32:
 		return TypeInt32
-	case int64:
+	case int, int64:
 		return TypeInt64
-	case uint16:
+	case uint8, uint16:
 		return TypeUint16
 	case uint32:
 		return TypeUint32
-	case uint64:
+	case uint, uint64:
 		return TypeUint64
 	case float32:
 		return TypeFloat
 	case float64:
 		return TypeDouble
-	case string, time.Time:
+	case string:
 		return TypeString
-	// json.RawMessage is a named []byte type; it must be matched before []byte and
-	// is classified by sniffing the first non-whitespace byte ('{' object, '[' array).
-	case json.RawMessage:
-		return sniffJsonShape(value)
 	case []byte:
 		return TypeRaw
-	case map[string]any:
-		return TypeJsonObject
-	case []any:
-		return TypeJsonArray
 	default:
 		return TypeUndefined
 	}
 }
 
-// sniffJsonShape classifies a json.RawMessage by its first non-whitespace byte:
-// '{' -> jsonObject, '[' -> jsonArray, anything else (incl. empty) -> undefined.
-// Full well-formedness/shape validation happens later in ConvertAnyValue.
-func sniffJsonShape(raw json.RawMessage) DataType {
-	for _, b := range raw {
-		switch b {
-		case ' ', '\t', '\n', '\r':
-			continue
-		case '{':
-			return TypeJsonObject
-		case '[':
-			return TypeJsonArray
-		default:
-			return TypeUndefined
-		}
-	}
-	return TypeUndefined
-}
-
+// IsNumber reports whether the type is one of the integer or float types.
+// bool, string, raw and TypeUndefined are not numbers.
 func (dataType DataType) IsNumber() bool {
 	switch dataType {
 	case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble:
@@ -107,6 +96,8 @@ func (dataType DataType) IsNumber() bool {
 	}
 }
 
+// IsSupported reports whether the type may be declared in a port schema, that
+// is whether it is a member of SupportedTypes. TypeUndefined is not.
 func (dataType DataType) IsSupported() bool {
 	_, exists := SupportedTypes[dataType]
 	return exists

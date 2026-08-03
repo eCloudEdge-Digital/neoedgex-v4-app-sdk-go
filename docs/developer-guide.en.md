@@ -11,47 +11,39 @@ NeoEdgeX App SDK v4 is the Go SDK for building NeoEdgeX node applications such a
 - publish downstream output through `ctx.Publish(...)`
 - report runtime errors through `ctx.ReportError(...)`
 
-The SDK also handles platform-facing concerns such as node lifecycle, message transport integration, heartbeats, status reporting, shutdown handling, and mock-mode execution.
+The SDK also handles node lifecycle, message transport, heartbeats, error reporting, shutdown, and mock mode.
 
 ## Public Surface
 
-Third-party applications should only depend on these packages:
+Third-party applications may depend on these packages:
 
-- `neoedgex`
-- `neoedgex/mock`
-- `neoedgex/testutil` (for unit tests only)
+- `neoedgex` — the app entry point, the handler interface, and the types a handler works with
+- `neoedgex/contract` — the schema types: `DataType` with its `Type*` constants, `PortFieldSchema`, `NodeData`
+- `neoedgex/mock` — the configuration format for local mock runs
+- `neoedgex/testutil` — a `NodeEnv` double and a message builder, for unit tests; a production entrypoint has no reason to import it
 
-These are the stable public entry points documented by this guide:
+`neoedgex` re-exports the handler-facing types — `Node`, `Message`, `Logger`, `ErrorCode` — as aliases of the `contract` ones. They are the same types, so the two spellings mix freely, and an app that only reads values and publishes values never has to import `contract`. You need `contract` as soon as you name a schema type in Go code, for example to build a node configuration in a test or to walk `NodeConfig().Data.Inputs`.
+
+These are the entry points documented by this guide:
 
 - `neoedgex.New(handler)`
 - `(*App).Run()`
 - `(*App).EnableMock(...)`
 - `(*App).DisableSDKLog()`
-- `(*App).UseRawJson()`
 - `neoedgex.LoadMockConfig(...)`
 - `neoedgex.NodeHandler`
 - `neoedgex.NodeEnv`
 - `neoedgex.Node`
-- `neoedgex.Message`
+- `neoedgex.Message`, with `ToMap()` and `ToStruct(...)`
 - `neoedgex.Logger`
 - `neoedgex.ErrorCode`
+- `contract.DataType` and the `Type*` constants
+- `contract.PortFieldSchema`, `contract.NodeData`
 - `mock.LoadConfig(...)`
-- `testutil.MockNodeEnv`
+- `testutil.MockNodeEnv`, with `NewMessage(...)` and `Deliver(...)`
+- `testutil.NewMessage(...)`, `testutil.Fields`, `testutil.Field`, `testutil.Undeclared`
 
-Do **not** depend on packages outside the public SDK surface listed above, even if other paths are visible in the repository. Their structure is not part of the external SDK contract.
-
-## Packaging Rules
-
-Production apps should import only these packages:
-
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex`
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock`
-
-Tests may also import:
-
-- `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/testutil`
-
-Do not import internal or unstable implementation paths even if they are visible in the repository.
+Every other path in the repo is off-limits, `internal/` above all: it is not part of the SDK contract and may change in any release.
 
 ## Quick Start
 
@@ -71,7 +63,7 @@ type ExampleApp struct{}
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for range ctx.Messages() {
 		if err := ctx.Publish("output1", map[string]any{
-			"hello": "world",
+			"power": 42.0,
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}
@@ -85,6 +77,8 @@ func main() {
 }
 ```
 
+The handle and the key are not free-form: `Publish` builds the payload from the node's output schema, so this example only sends something on a node whose `output1` handle declares a `power` field. Keys the schema does not declare are dropped, which is the first thing to check when nothing reaches the downstream node. See Output Schema below.
+
 To disable internal SDK logs, call `DisableSDKLog()` before `Run()`:
 
 ```go
@@ -94,25 +88,16 @@ if err := app.Run(); err != nil {
 }
 ```
 
-By default, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are decoded into `map[string]any` / `[]any` before they reach the handler. Go's JSON decoder turns every JSON number into `float64`, so integers larger than 2^53 lose precision. If the app must preserve the original bytes — for example a forwarder that re-emits the payload downstream — call `UseRawJson()` before `Run()`:
-
-```go
-app := neoedgex.New(&ExampleApp{}).UseRawJson()
-if err := app.Run(); err != nil {
-	log.Fatal(err)
-}
-```
-
-With `UseRawJson()`, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are delivered as `json.RawMessage` (the validated original bytes) instead of `map[string]any` / `[]any`. Validation is unchanged: `null`, malformed JSON, and the wrong shape (an array for a `jsonObject`, an object for a `jsonArray`) are still rejected — only the delivered Go type differs. Because the raw bytes are preserved, large integers keep full precision, and re-marshalling for a downstream `Publish` reproduces the original value verbatim, including nested numbers. Non-JSON types are unaffected.
+It silences only what the SDK writes about itself. Lines your handler writes through `ctx.Logger()` keep coming out.
 
 ## Configuring a Custom App
 
 The SDK reads platform-mounted files from the fixed root path `/opt/neoedgex`:
 
-- `messenger.json`: `/opt/neoedgex/config/messenger.json`, which defines which NeoEdgeX topics this app is allowed to subscribe to and publish through the messenger; it is usually generated by the platform, so third-party apps normally do not edit it by hand
-- `config.json`: `/opt/neoedgex/config/config.json`, which is the node configuration file delivered by the platform; the SDK reads it and exposes the current node settings through `ctx.NodeConfig()`
+- `/opt/neoedgex/config/messenger.json`: the MQTT account and password generated by the platform; the broker applies the topic permissions that belong to that account. Mounted read-only, so an app neither can nor needs to modify it.
+- `/opt/neoedgex/config/config.json`: the node configuration delivered by the platform; the SDK exposes it to the handler through `ctx.NodeConfig()`
 
-A Custom App node is configured primarily through the node definition returned by `ctx.NodeConfig()`. In practice, you usually adjust three areas:
+A Custom App node is configured through the node definition returned by `ctx.NodeConfig()`, in three areas:
 
 1. `config.data.inputs`
 2. `config.data.outputs`
@@ -120,7 +105,7 @@ A Custom App node is configured primarily through the node definition returned b
 
 ### Input Schema
 
-Custom App input handles live under `config.data.inputs`. A node can declare multiple input handles, each carrying its own field schema:
+Custom App input handles live under `config.data.inputs`:
 
 ```json
 {
@@ -138,20 +123,20 @@ Custom App input handles live under `config.data.inputs`. A node can declare mul
 }
 ```
 
-The handler uses `msg.Handle` to tell which input the message came from.
+A node can declare multiple input handles, each with its own field schema; the handler uses `msg.Handle` to tell which input the message came from.
 
-Input schema describes which fields your handler expects to read from `ctx.Messages()`. Each field defines:
+Input schema describes the fields your handler reads from `ctx.Messages()`. Each field defines:
 
-- `key`: the field name that will appear in `msg.Data`
+- `key`: the field name your handler reads from the decoded message
 - `type`: the field data type, which fully determines the decoded Go value
 
-When you adjust the input schema, you are changing which keys the SDK will decode into `neoedgex.Message.Data` for that handle. The keys your handler reads should stay aligned with this definition, and the resulting Go value type comes from the SDK's decode result.
+When you adjust the input schema, you are changing which keys the SDK decodes by schema type when your handler calls `msg.ToMap()` or `msg.ToStruct(...)` on that handle. The keys your handler reads should stay aligned with this definition, and the resulting Go value type comes from the SDK's decode result.
 
 <img width="200" height="102" src="./assets/node-input-config.png" />
 
 ### Output Schema
 
-Custom App output handles live under `config.data.outputs`. The most common shape is:
+Custom App output handles live under `config.data.outputs`:
 
 ```json
 {
@@ -170,8 +155,8 @@ This schema controls how `ctx.Publish(handle, map[string]any{...})` is validated
 
 - your published map keys should match the keys defined under that `handle`
 - the destination `type` determines which Go values are accepted and how they are converted
-- omitted schema fields are filled with an empty field serialized as `type=""` and `value=""`
-- explicit `nil` values are also published as empty fields
+- omitted schema fields are published as CBOR null (undefined)
+- explicit `nil` values are also published as CBOR null
 
 If you add, remove, or rename output fields here, update your `ctx.Publish(...)` call to match.
 
@@ -179,7 +164,7 @@ If you add, remove, or rename output fields here, update your `ctx.Publish(...)`
 
 ### Settings
 
-Custom App runtime settings live under `config.data.settings`. These fields affect the generated `docker-compose.yml` like this:
+Custom App runtime settings live under `config.data.settings`, and map onto the generated `docker-compose.yml` like this:
 
 - `containerName`: controls both the service key and `container_name`
 - `image`: becomes the service `image`
@@ -189,11 +174,11 @@ Custom App runtime settings live under `config.data.settings`. These fields affe
 - `gpu.enabled=true`: adds a `gpus` section
 - `portBindings`: becomes the service `ports`
 
-Some fields still belong to node settings, but do not appear directly in the compose service example below:
+Some fields belong to node settings but do not appear in the compose service:
 
 - `credentials`: `neoedgex-agent` uses these credentials to log in to the Docker registry and pull the container image specified by `image`
 
-The resulting `docker-compose.yml` will look like this:
+The resulting `docker-compose.yml`:
 
 ```yaml
 name: neoedgex
@@ -236,17 +221,17 @@ services:
 
 ### Passing App Config
 
-After the app starts, it reads its actual business configuration from environment variables or mounted files. The SDK carries those values into the container, but it does not parse your app-specific business config schema.
+An app reads its business configuration from environment variables or mounted files; the SDK carries those values into the container but does not parse your app's business config.
 
 #### Pattern A: fixed-key env var config
 
-This pattern works well for:
+Good for:
 
 - small configuration payloads
 - single strings or JSON blobs
 - a small amount of configuration that fits naturally in environment variables
 
-For example, define a fixed key in `settings.envVars`:
+Define a fixed key in `settings.envVars`:
 
 ```json
 "envVars": [
@@ -258,7 +243,7 @@ For example, define a fixed key in `settings.envVars`:
 ]
 ```
 
-In the generated compose service, this becomes container environment. Your app can then read the fixed key directly:
+The app then reads the fixed key:
 
 ```go
 raw := os.Getenv("HTTPCLIENT_CONFIG_JSON")
@@ -267,9 +252,7 @@ if raw == "" {
 }
 ```
 
-The important part is that the fixed env key and the payload format are defined by your app contract, not by the SDK.
-
-If you do not want to place a full JSON document into one env var, you can also split JSON fields into multiple fixed env vars:
+You can also split the fields into several fixed env vars:
 
 ```json
 "envVars": [
@@ -291,26 +274,22 @@ If you do not want to place a full JSON document into one env var, you can also 
 ]
 ```
 
-Your app can then read those fixed keys individually:
-
 ```go
 endpoint := os.Getenv("HTTPCLIENT_ENDPOINT")
 method := os.Getenv("HTTPCLIENT_METHOD")
 timeoutRaw := os.Getenv("HTTPCLIENT_TIMEOUT_SECONDS")
 ```
 
-This pattern works well when the number of fields is small, each field has a clear meaning, and you want deployers to override individual values directly.
-
 #### Pattern B: fixed-path file config
 
-This pattern works well for:
+Good for:
 
 - larger JSON or YAML
 - structured configuration
 - certificates, keys, and secret files
 - content that is easier to manage as a mounted file
 
-For example, declare a fixed in-container path in `settings.files`:
+Declare a fixed in-container path in `settings.files`:
 
 ```json
 "files": [
@@ -322,7 +301,7 @@ For example, declare a fixed in-container path in `settings.files`:
 ]
 ```
 
-In the generated compose service, this becomes a bind mount. Your app can then read that fixed path directly:
+The app then reads that path directly:
 
 ```go
 payload, err := os.ReadFile("/myconfig.json")
@@ -331,27 +310,24 @@ if err != nil {
 }
 ```
 
-This pattern is especially useful when your app wants to own a full config-file format instead of splitting every field into separate environment variables.
-
 #### Choosing env var vs file
-
-Use these rules of thumb:
 
 - small values or small JSON payloads: prefer env vars
 - larger or structured config: prefer files
 - certificates, keys, and secret files: usually prefer files
 - if your app supports both env and file, define a fixed precedence order inside the app, for example env first and file second
 
-The SDK will not decide that precedence for you. That precedence is part of your app contract and should be documented by the app itself.
+The SDK does not decide that precedence; it is part of your app contract and should be documented by the app itself.
 
 ## Message Model
 
-### Runtime Terms
+NeoFlow nodes talk to each other over MQTT: one data message is one MQTT payload, encoded in CBOR — a compact binary format. You never build or parse that payload yourself — `msg.ToMap()` / `msg.ToStruct(...)` decode what arrives, and `ctx.Publish(...)` encodes what you send. This section describes both ends: what your handler receives from `ctx.Messages()`, and what `Publish` sends.
 
-Important runtime terms:
+### Runtime Terms
 
 - `node`: one NeoEdgeX node configuration matched to your app
 - `handle`: an input or output port name such as `input1` or `output1`
+- `tag`: one named field of an input or output schema — the `key` / `type` pair, for example `{ "key": "temperature", "type": "double" }`
 - `mock mode`: a local SDK mode that injects synthetic messages without a live platform
 <img width="200" height="61"  src="./assets/node-diagram.png" />
 
@@ -367,45 +343,51 @@ Each handler receives a `neoedgex.NodeEnv`.
 - `Logger()` to get the SDK-provided node-scoped logger
 - `Publish(handle string, data map[string]any)` to emit on the specified output handle
 - `ReportError(code, err)` to report platform-visible node errors
-- `Stop()` to ask the SDK to stop this node, typically after the handler decides it cannot continue because of a fatal error
+- `Stop()` to ask the SDK to stop this node, for a fatal error the handler cannot continue past
 
 `neoedgex.Message` contains:
 
 - `Handle`: which input handle triggered this message
-- `Data`: a `map[string]any` containing native Go values decoded from the input NeoFlow fields
+- `Data`: a `RawMessage` holding the `data` section of the received message exactly as it arrived, still CBOR-encoded; you do not read it directly — decode it with `msg.ToMap()` or `msg.ToStruct(...)`
 - `Source`: source node ID
-- `Timestamp`: upstream publish time in RFC3339 format; empty string when the upstream payload does not provide it
+- `Timestamp`: the time the upstream node published, in RFC3339 format. It is written from that node's own clock, so expect a local offset such as `+08:00` rather than `Z` unless the machine runs on UTC. It is an empty string when the upstream payload carries no time, which is the case for every mock-injected message
 
 ### Reading Input Values
 
-The `msg.Data` you read in the handler already contains native Go values.
+`msg.Data` holds the `data` section of the received message, still CBOR-encoded. Call `msg.ToMap()` to decode it into a `map[string]any` of native Go values:
+
+- every field declared in the input schema is decoded as the concrete Go type of the `type` declared for that tag (see the table below)
+- a field is `nil` when it is **undefined**: the upstream node did not produce it (CBOR null), the key is absent from the received message, or the received value could not be read or converted to the schema type
+- when the type of a received value differs from the schema type, the SDK converts it using the same cross-type conversion rules used on the Publish side (integer range checks, float-to-int truncation, string-to-number parsing, NaN/Inf rejected); if the rules do not allow the conversion or it fails, the field is delivered as `nil`
+- keys that appear in the received message but are **not** declared in the input schema are passed through as the plain Go value the decoder produces (see the tables below) and a debug log; a value the SDK has no Go type for is delivered as `nil` instead
 
 First dispatch on `msg.Handle` to know which input the message came from, then check whether each expected key exists and whether the value is `nil`.
 
-Consider one input payload carrying a scalar, a `jsonObject`, and a `jsonArray` field. The Go value for each field in `msg.Data` is shown below (`jsonObject` is a `map[string]any`, `jsonArray` is a `[]any`; both become `json.RawMessage` when `UseRawJson()` is enabled):
+Consider an input schema declaring a `double` field and a `string` field. Decoding the message gives:
 
 ```go
-neoedgex.Message{
-	Handle:    "input1",
-	Source:    "upstream-node",
-	Timestamp: "2026-03-31T09:10:11Z",
-	Data: map[string]any{
-		"temperature": 25.5,
-		"payload":     map[string]any{"unit": "C"},
-		"samples":     []any{1.0, 2.0, 3.0},
-	},
-}
+msg := <-ctx.Messages()
+// msg.Handle == "input1", msg.Source == "upstream-node"
+
+data := msg.ToMap()
+// data == map[string]any{
+// 	"temperature": 25.5,       // schema type double -> float64
+// 	"deviceName":  "sensor-1", // schema type string -> string
+// }
 ```
+
+Always take the message from `ctx.Messages()`. A `neoedgex.Message` you assemble yourself as a struct literal carries neither data nor an input schema, so `ToMap()` on it returns nothing; to build one in a test, use `testutil.NewMessage` (see Unit Test Helper).
 
 Apply the same defensive pattern to each field: check whether the key exists, then whether the value is `nil`, then type-assert. Using `temperature`:
 
 ```go
 func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 	for msg := range ctx.Messages() {
+		data := msg.ToMap()
 		switch msg.Handle {
 		case "input1":
 			var temperature float64
-			if value, exists := msg.Data["temperature"]; !exists {
+			if value, exists := data["temperature"]; !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("internal error: input1 schema does not define tag temperature"))
 				continue
 			} else if value == nil {
@@ -427,21 +409,17 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-Other types follow the same flow with a different target type in the assertion. For a `jsonObject` field, the assertion differs between the default mode and `UseRawJson()`:
+Other types follow the same flow with a different target type in the assertion.
 
-```go
-// Default: a jsonObject is delivered as map[string]any
-payload, ok := msg.Data["payload"].(map[string]any)
+What the decoded map means:
 
-// With UseRawJson(): a jsonObject is delivered as json.RawMessage
-raw, ok := msg.Data["payload"].(json.RawMessage)
-```
+- `!exists`: either your app is reading a tag that is not defined in the input schema — an internal error — or the whole `data` section could not be read, in which case `ToMap()` returns nothing at all and every key is missing
+- `exists && value == nil`: the field is undefined — the previous node did not successfully produce that tag, the key was absent from the received message, or the value could not be read or converted to the schema type; whether to apply a default, skip, or report a process error is up to your app
+- `exists && value != nil`: proceed with the Go type assertion; the value type follows the two tables below
 
-Treat `msg.Data` with this fixed meaning:
+#### Which Go Type a Value Arrives As
 
-- `!exists`: your app is trying to read a tag that is not defined in the input schema, so treat it as an internal error
-- `exists && value == nil`: the previous node did not successfully produce that tag; whether to apply a default, skip, or report a process error is up to your app
-- `exists && value != nil`: proceed with the normal Go type assertion and business logic; the value type will always match the tag `type` in the input schema, as shown below:
+**Tag declared in the input schema.** When there is a value, it arrives as the Go type of the declared `type`; when there is none it arrives as `nil`, as the two rules under the table describe:
 
 | type | Go type seen by the handler |
 | --- | --- |
@@ -456,18 +434,131 @@ Treat `msg.Data` with this fixed meaning:
 | `double` | `float64` |
 | `string` | `string` |
 | `raw` | `[]byte` |
-| `jsonObject` | `map[string]any` (or `json.RawMessage` with `UseRawJson()`) |
-| `jsonArray` | `[]any` (or `json.RawMessage` with `UseRawJson()`) |
+
+Two rules apply on top of the table:
+
+- if the upstream node sent a decimal number as single precision into a `double` tag, or as double precision into a `float` tag, the SDK normalizes it through the conversion rules and restores the shortest decimal: `25.34` sent as a single-precision number into a `double` tag arrives as `25.34`, not `25.34000015258789`
+- if the value does not fit the declared type — for example `1e300` into a `float` tag — the conversion fails and the field arrives as `nil`
+
+**Tag not declared in the input schema.** The value is passed through as whatever the decoder produces, with no schema conversion. These are the only Go types delivered this way:
+
+| what the upstream node sent | Go type seen by the handler |
+| --- | --- |
+| a decimal number, at any precision | `float64` |
+| a whole number from 0 to 9223372036854775807 | `int64` |
+| a whole number from 9223372036854775808 to 18446744073709551615 | `uint64` |
+| a negative whole number down to -9223372036854775808 | `int64` |
+| text | `string` |
+| `true` / `false` | `bool` |
+| binary data | `[]byte` |
+| anything else — a list, a nested structure, or a whole number outside the ranges above | `nil` (undefined) |
+
+Single-precision values are widened here: `25.34` sent as a single-precision number arrives as `25.34000015258789`. Declaring the tag in the input schema is the way to avoid that.
+
+The last row is a closed rule: the Go types listed above are everything the SDK delivers, and any other value arrives as `nil`, with the key still present and a warning in the log. Lists and nested structures are never delivered — no tag type can declare one, so they only reach you from a sender that does not use this SDK, and they arrive as a single `nil` for the whole value rather than partially. Whole numbers are the case you can hit in practice — they arrive as a number only inside the ranges listed above.
+
+**Anything the SDK cannot decode, convert, or represent arrives as `nil`.** The key stays in the map with a `nil` value. That single rule covers every "no value" case: the upstream node produced no value, the key was missing from the received message, the value did not fit the declared type, the value could not be read at all, or the value has no Go type the SDK delivers.
+
+There is one case where a key is not in the map at all: a message whose whole `data` section is unreadable, which is what a corrupt payload looks like. `ToMap()` then returns nothing — not even the schema keys — and `ToStruct(...)` returns an error.
+
+### Decoding into a Struct
+
+`msg.ToStruct(&target)` decodes the data map directly into a struct.
+
+**Field matching uses the `cbor` struct tag, otherwise the `json` tag, otherwise the field name — and it is exact-case.** A field named `Temp` is not filled by the key `temp`, and since Go exported fields start with a capital letter while field keys usually do not, this means **every field needs a tag**. An untagged field silently keeps its zero value and `ToStruct` reports no error. Write `cbor:"temperature"`, or rely on a `json:"temperature"` the struct already carries: a non-empty `cbor` tag decides on its own and the `json` tag is read only when there is none, so `cbor:",omitempty" json:"level"` falls back to the field name rather than `level`. In whichever tag decides, options after the name are stripped — `json:"level,omitempty"` matches `level` — a value of exactly `-` skips the field, and `json:"-,"` names the field `-`.
+
+A concrete field whose declared Go type is the one its key's schema `type` maps to receives exactly what `msg.ToMap()` delivers for that key, cross-type conversion rules included — a `double` tag sent at single precision reaches a `float64` field as `25.34`, not `25.34000015258789`. Pointer fields follow their element type. Where the declared type **conflicts** with the schema type the declaration wins: the value is decoded directly as declared, with the decoder's range checking and none of the conversion rules. An `any` (`interface{}`) field receives the value typed by the two tables above: the Go type of the declared `type` when the input schema declares that tag, otherwise the plain Go value the decoder produces.
+
+**Undefined semantics — read this before choosing field types.** When the key is absent from the received message or its value is undefined, `ToStruct` leaves the field untouched, whatever its type. A **non-pointer** field therefore stays at its Go zero value — declaring a field as a non-pointer type means **that field gives up the ability to distinguish "zero" from "no value"**: after decoding, `0`, `""`, or `false` may mean either an actual zero produced upstream or an undefined field, and the struct cannot tell you which. If your app needs that distinction, declare the field as a **pointer** (or `any`): an undefined field then surfaces as `nil`, while a real zero surfaces as a non-nil pointer to the zero value.
+
+A value that is present but cannot be read or converted behaves differently, and here `ToStruct` does **not** follow `msg.ToMap()`. An `any` field is left `nil`, as the map delivers it. A concrete or pointer field fails the whole call instead: `ToStruct` returns an error naming the field, because a `float64` or an `int16` has nothing to put there — `70000` into a field declared `int16` is that error, while the map delivers it as `nil`. The same happens when the whole `data` section cannot be read. On any error, discard the target instead of inspecting it: fields decoded before the failing one keep their values and the rest were never reached.
+
+The example below runs as it stands: wrap it in an `Example()` function in a `_test.go` file of your own, add the `fmt`, `math`, `neoedgex/contract` and `neoedgex/testutil` imports, and `go test` checks it against the `// Output:` block. `testutil.NewMessage(...)` builds the message your handler would receive from `ctx.Messages()`; in your own app `msg` comes from that channel and a decode error goes to `ctx.ReportError(...)` instead of being printed.
+
+```go
+// msg is one message from ctx.Messages(); testutil builds the same thing in
+// a test. Next to each value is the type the receiving node's input schema
+// declares that key as — temperature and offset double, count int64, ratio
+// float, level double — while testutil.Undeclared marks the keys the schema
+// does not declare at all.
+msg := testutil.NewMessage("input1", testutil.Fields{
+	"temperature": {Value: nil, Type: contract.TypeDouble},        // upstream produced no value
+	"offset":      {Value: float64(0), Type: contract.TypeDouble}, // upstream produced a real 0
+	"count":       {Value: nil, Type: contract.TypeInt64},         // upstream produced no value
+	"ratio":       {Value: float32(25.34), Type: contract.TypeFloat},
+	"level":       {Value: float64(25.34), Type: contract.TypeDouble},
+	"widened":     {Value: float32(25.34), Type: testutil.Undeclared},
+	"seq":         {Value: uint64(5), Type: testutil.Undeclared},
+	"total":       {Value: uint64(math.MaxUint64), Type: testutil.Undeclared},
+	"deviceName":  {Value: "sensor-1", Type: testutil.Undeclared},
+	"running":     {Value: true, Type: testutil.Undeclared},
+	"payload":     {Value: []byte{0x01, 0x02}, Type: testutil.Undeclared},
+})
+
+type Reading struct {
+	Temperature *float64 `cbor:"temperature"` // pointer: no value -> nil
+	Offset      *float64 `cbor:"offset"`      // pointer: real 0 -> pointer to 0
+	Count       int64    `cbor:"count"`       // not a pointer: no value -> 0
+	Ratio       any      `cbor:"ratio"`       // declared float -> float32
+	Level       any      `cbor:"level"`       // declared double -> float64
+	Widened     any      `cbor:"widened"`     // not declared -> float64
+	Seq         any      `cbor:"seq"`         // not declared -> int64
+	Total       any      `cbor:"total"`       // not declared, above int64 -> uint64
+	DeviceName  any      `cbor:"deviceName"`  // not declared -> string
+	Running     any      `cbor:"running"`     // not declared -> bool
+	Payload     any      `cbor:"payload"`     // not declared -> []byte
+}
+
+var r Reading
+if err := msg.ToStruct(&r); err != nil {
+	fmt.Println("cannot decode this message:", err)
+	return
+}
+
+if r.Temperature == nil {
+	fmt.Println("Temperature: no value")
+} else {
+	fmt.Println("Temperature:", *r.Temperature)
+}
+if r.Offset == nil {
+	fmt.Println("Offset: no value")
+} else {
+	fmt.Println("Offset:", *r.Offset)
+}
+fmt.Println("Count:", r.Count, "<- no value and a real 0 look the same here")
+fmt.Printf("Ratio: %v (%T)\n", r.Ratio, r.Ratio)
+fmt.Printf("Level: %v (%T)\n", r.Level, r.Level)
+fmt.Printf("Widened: %v (%T)\n", r.Widened, r.Widened)
+fmt.Printf("Seq: %v (%T)\n", r.Seq, r.Seq)
+fmt.Printf("Total: %v (%T)\n", r.Total, r.Total)
+fmt.Printf("DeviceName: %v (%T)\n", r.DeviceName, r.DeviceName)
+fmt.Printf("Running: %v (%T)\n", r.Running, r.Running)
+fmt.Printf("Payload: %v (%T)\n", r.Payload, r.Payload)
+
+// Output:
+// Temperature: no value
+// Offset: 0
+// Count: 0 <- no value and a real 0 look the same here
+// Ratio: 25.34 (float32)
+// Level: 25.34 (float64)
+// Widened: 25.34000015258789 (float64)
+// Seq: 5 (int64)
+// Total: 18446744073709551615 (uint64)
+// DeviceName: sensor-1 (string)
+// Running: true (bool)
+// Payload: [1 2] ([]uint8)
+```
 
 ### Publish Rules
 
-`Publish` currently behaves like this:
+`Publish` behaves like this:
 
 - it builds payloads against the schema defined under the `handle` argument; the handle must exist in `config.data.outputs`, otherwise Publish returns an error
-- if an output field defined in schema is missing from your `data`, the SDK fills it with an empty field
-- if you explicitly provide a field with `nil`, the SDK also turns it into an empty field
-- keys in your `data` map that are not defined in that output schema are silently ignored and will not appear in the published payload
-- `ctx.Publish(handle, map[string]any{...})` accepts ordinary Go values, and the handler also reads ordinary Go values from `msg.Data`
+- if an output field defined in schema is missing from your `data`, the SDK publishes it as CBOR null (undefined)
+- if you explicitly provide a field with `nil`, the SDK also publishes it as CBOR null
+- keys in your `data` map that are not defined in that output schema are dropped (with a warning log) and will not appear in the published payload
+- `ctx.Publish(handle, map[string]any{...})` accepts ordinary Go values, and the handler also reads ordinary Go values from `msg.ToMap()`
+- `Publish` returns an error in three cases only: the handle does not exist in `config.data.outputs`, the payload cannot be encoded, or the MQTT publish fails. A field the SDK cannot convert to its schema type is **not** one of them: that field goes out as CBOR null, the SDK reports the failure to the platform on your behalf, and `Publish` still returns `nil`. Do not read a `nil` return as "every field went out the way I meant it"
 
 Concrete example for missing output fields:
 
@@ -481,9 +572,7 @@ _ = ctx.Publish("output1", map[string]any{
 })
 ```
 
-The SDK publishes `power` from your value and fills `status` with an empty field because it exists in schema but was omitted from `data`. Passing `status: nil` produces the same result.
-
-An omitted schema field is not dropped; it is published as an explicit empty field.
+The SDK publishes `power` from your value and publishes `status` as CBOR null, because it exists in schema but was omitted from `data`; the downstream handler reads it as `nil` (undefined). Passing `status: nil` produces the same result:
 
 ```go
 err := ctx.Publish("output1", map[string]any{
@@ -495,11 +584,9 @@ if err != nil {
 }
 ```
 
-This means you are explicitly publishing `status` as an empty field. Omitting `status` entirely has the same effect.
-
 ### Go Value Conversion
 
-When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, conversion is controlled by the destination type defined under that handle's schema.
+`ctx.Publish` conversion is controlled by the destination type defined under that handle's schema. The converted value is sent as a native CBOR value of that type.
 
 <table>
   <thead>
@@ -515,80 +602,80 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     <tr>
       <td rowspan="2"><code>bool</code></td>
       <td><code>bool</code></td>
-      <td><code>true -&gt; "true"</code>, <code>false -&gt; "false"</code></td>
-      <td><code>true -&gt; "true"</code></td>
+      <td>Kept unchanged.</td>
+      <td><code>true -&gt; true</code></td>
       <td rowspan="2">Plain <code>string</code> is not accepted.</td>
     </tr>
     <tr>
       <td>signed integers, unsigned integers, floats</td>
-      <td>Zero / non-zero semantics: <code>0</code> or <code>0.0</code> becomes <code>"false"</code>; any other value becomes <code>"true"</code>.</td>
-      <td><code>int64(0) -&gt; "false"</code>; <code>float64(3.14) -&gt; "true"</code></td>
+      <td>Zero / non-zero semantics: <code>0</code> or <code>0.0</code> becomes <code>false</code>; any other value becomes <code>true</code>.</td>
+      <td><code>int64(0) -&gt; false</code>; <code>float64(3.14) -&gt; true</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>int16</code>, <code>int32</code>, <code>int64</code></td>
       <td>signed integers</td>
       <td>Converted to the target width with range checks.</td>
-      <td><code>int32(42) -&gt; "42"</code></td>
+      <td>destination <code>int64</code> + <code>int32(42) -&gt; int64(42)</code></td>
       <td rowspan="4"><code>NaN</code>, <code>Inf</code>, out-of-range values, <code>time.Time</code>, and <code>[]byte</code> fail.</td>
     </tr>
     <tr>
       <td>unsigned integers</td>
       <td>Converted to the target width with range checks.</td>
-      <td><code>uint32(42) -&gt; "42"</code></td>
+      <td>destination <code>int32</code> + <code>uint32(42) -&gt; int32(42)</code></td>
     </tr>
     <tr>
       <td><code>float32</code>, <code>float64</code></td>
       <td>Fractional parts are truncated first, then the value is converted with range checks.</td>
-      <td>destination <code>int64</code> + <code>float64(12.9) -&gt; "12"</code></td>
+      <td>destination <code>int64</code> + <code>float64(12.9) -&gt; int64(12)</code></td>
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
       <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination type.</td>
-      <td>destination <code>int32</code> + <code>true -&gt; "1"</code>; destination <code>int16</code> + <code>"42" -&gt; "42"</code></td>
+      <td>destination <code>int32</code> + <code>true -&gt; int32(1)</code>; destination <code>int16</code> + <code>"42" -&gt; int16(42)</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>uint16</code>, <code>uint32</code>, <code>uint64</code></td>
       <td>signed integers</td>
       <td>Converted to the target uint width only if the resulting value is non-negative and within range.</td>
-      <td>destination <code>uint32</code> + <code>int32(42) -&gt; "42"</code></td>
+      <td>destination <code>uint32</code> + <code>int32(42) -&gt; uint32(42)</code></td>
       <td rowspan="4">Negative values, <code>NaN</code>, <code>Inf</code>, and out-of-range values fail.</td>
     </tr>
     <tr>
       <td>unsigned integers</td>
       <td>Converted to the target uint width with range checks.</td>
-      <td><code>uint32(42) -&gt; "42"</code></td>
+      <td>destination <code>uint64</code> + <code>uint32(42) -&gt; uint64(42)</code></td>
     </tr>
     <tr>
       <td><code>float32</code>, <code>float64</code></td>
       <td>Fractional parts are truncated first, then the value is converted with uint range checks.</td>
-      <td>destination <code>uint64</code> + <code>float64(12.9) -&gt; "12"</code></td>
+      <td>destination <code>uint64</code> + <code>float64(12.9) -&gt; uint64(12)</code></td>
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
       <td><code>bool</code> becomes <code>1</code> or <code>0</code>. Numeric strings must parse as the exact destination type.</td>
-      <td>destination <code>uint32</code> + <code>true -&gt; "1"</code></td>
+      <td>destination <code>uint32</code> + <code>true -&gt; uint32(1)</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>float</code>, <code>double</code></td>
       <td>signed integers</td>
-      <td>Converted to the destination float format and serialized in scientific notation.</td>
-      <td>destination <code>double</code> + <code>int64(42) -&gt; "4.2e+01"</code></td>
-      <td rowspan="4"><code>time.Time</code> and <code>[]byte</code> are not accepted.</td>
+      <td>Converted to the destination float precision.</td>
+      <td>destination <code>double</code> + <code>int64(42) -&gt; float64(42)</code></td>
+      <td rowspan="4"><code>NaN</code>, <code>Inf</code>, <code>time.Time</code>, and <code>[]byte</code> are not accepted.</td>
     </tr>
     <tr>
       <td>unsigned integers</td>
-      <td>Converted to the destination float format and serialized in scientific notation.</td>
-      <td>destination <code>double</code> + <code>uint32(42) -&gt; "4.2e+01"</code></td>
+      <td>Converted to the destination float precision.</td>
+      <td>destination <code>double</code> + <code>uint32(42) -&gt; float64(42)</code></td>
     </tr>
     <tr>
       <td><code>float32</code>, <code>float64</code></td>
       <td>Converted to the destination precision.</td>
-      <td>destination <code>float</code> + <code>float64(25.5) -&gt; "2.55e+01"</code></td>
+      <td>destination <code>float</code> + <code>float64(25.5) -&gt; float32(25.5)</code></td>
     </tr>
     <tr>
       <td><code>bool</code>, numeric <code>string</code></td>
       <td><code>bool</code> becomes <code>1.0</code> or <code>0.0</code>. Numeric strings must parse as the exact destination float type.</td>
-      <td>destination <code>double</code> + <code>true -&gt; "1e+00"</code>; destination <code>double</code> + <code>"3.14" -&gt; "3.14e+00"</code></td>
+      <td>destination <code>double</code> + <code>true -&gt; float64(1)</code>; destination <code>double</code> + <code>"3.14" -&gt; float64(3.14)</code></td>
     </tr>
     <tr>
       <td rowspan="4"><code>string</code></td>
@@ -615,49 +702,20 @@ When you publish output fields with `ctx.Publish(handle, map[string]any{...})`, 
     <tr>
       <td><code>raw</code></td>
       <td><code>[]byte</code></td>
-      <td>Bytes are base64-encoded on the wire. Only <code>raw</code> to <code>raw</code> is allowed; no other type converts to or from <code>raw</code>.</td>
-      <td><code>[]byte("hello") -&gt; "aGVsbG8="</code></td>
+      <td>Sent as a native CBOR byte string (no base64). Only <code>raw</code> to <code>raw</code> is allowed; no other type converts to or from <code>raw</code>.</td>
+      <td><code>[]byte("hello")</code> is carried byte-for-byte.</td>
       <td>Other Go types are not accepted.</td>
-    </tr>
-    <tr>
-      <td rowspan="3"><code>jsonObject</code></td>
-      <td><code>map[string]any</code></td>
-      <td>The SDK <code>json.Marshal</code>s the map to the wire value. The field must be declared <code>jsonObject</code>.</td>
-      <td><code>map[string]any{"k":1} -&gt; "{\"k\":1}"</code></td>
-      <td rowspan="6">Strict validation. Same-shape only: a <code>jsonObject</code>/<code>jsonArray</code> field only accepts its own JSON shape (object vs array is enforced, <code>null</code> is rejected). Structs are <b>not</b> auto-marshaled and must be marshaled to <code>json.RawMessage</code> by the application. Any other Go type is rejected.</td>
-    </tr>
-    <tr>
-      <td><code>json.RawMessage</code> (object)</td>
-      <td>Strict-validated, then written <b>verbatim</b> (surrounding whitespace trimmed only — not re-marshaled/compacted), so big integers keep full precision. Shape is sniffed from the first non-whitespace byte.</td>
-      <td><code>json.RawMessage("{\"id\":9223372036854775807}")</code> is stored byte-for-byte.</td>
-    </tr>
-    <tr>
-      <td><code>[]any</code> (rejected here)</td>
-      <td>An array value cannot go into a <code>jsonObject</code> field.</td>
-      <td>—</td>
-    </tr>
-    <tr>
-      <td rowspan="3"><code>jsonArray</code></td>
-      <td><code>[]any</code></td>
-      <td>The SDK <code>json.Marshal</code>s the slice to the wire value. The field must be declared <code>jsonArray</code>.</td>
-      <td><code>[]any{1,2,3} -&gt; "[1,2,3]"</code></td>
-    </tr>
-    <tr>
-      <td><code>json.RawMessage</code> (array)</td>
-      <td>Strict-validated, then written <b>verbatim</b> (whitespace trimmed only), preserving big-integer precision. Shape is sniffed from the first non-whitespace byte.</td>
-      <td><code>json.RawMessage("[9223372036854775807]")</code> is stored byte-for-byte.</td>
-    </tr>
-    <tr>
-      <td><code>map[string]any</code> (rejected here)</td>
-      <td>An object value cannot go into a <code>jsonArray</code> field.</td>
-      <td>—</td>
     </tr>
   </tbody>
 </table>
 
+"Signed integers" and "unsigned integers" above mean every Go integer kind, `int`, `uint`, `int8` and `uint8` included — so `ctx.Publish(handle, map[string]any{"count": 5})`, where the untyped constant lands in `int`, converts to the declared tag type like any other integer. Widening the accepted Go kinds does not widen the tag types: the range checks are the same, so `int(70000)` into an `int16` field still fails.
+
+Values that are not single scalar values — a map, a struct, a slice other than `[]byte`, `json.RawMessage`, and `time.Time` — are rejected for every destination type: the SDK reports an error and publishes the field as CBOR null. For time values, format them to a string in the app first (e.g. `t.Format(time.RFC3339)`) and declare the field as `string`.
+
 The SDK decides whether a value can be converted from the Go value and the destination type declared by the schema. As a third-party app author, you usually only need to care about whether the Go value is accepted by the destination schema type.
 
-For example, assume `output1` schema defines this field:
+Assume `output1` schema defines this field:
 
 ```text
 - enabled: type=bool
@@ -681,9 +739,7 @@ err := ctx.Publish("output1", map[string]any{
 })
 ```
 
-The SDK does not return an error. Instead, it silently sets the field to an empty value and internally calls `ReportError` to notify the platform. `Publish` returns `nil`.
-
-`Publish` only returns an error in three cases: the specified output handle does not exist in the node config, JSON marshalling fails, or the MQTT publish fails. Conversion failures are not surfaced through the return value.
+`Publish` does not return an error: the SDK publishes `enabled` as CBOR null (undefined) and calls `ReportError` to notify the platform, and `Publish` still returns `nil`.
 
 ### Publish Flow
 
@@ -713,41 +769,32 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-Step 3: on the publisher side, the SDK turns those Go values into this output payload. Each field carries `type` and `value` only:
+Step 3: on the publisher side, the SDK converts those Go values to the schema types and encodes the whole message as CBOR. The message has three top-level fields: `source` (the publishing node), `timestamp` (the moment of publication, in RFC3339, taken from the container's clock — so it carries the local UTC offset, not necessarily `Z`), and `data` (your published fields). Shown here in CBOR diagnostic notation, the human-readable rendering of CBOR — each field carries its native value, with no per-field type wrapper:
 
-```json
+```text
 {
   "source": "publisher-node",
+  "timestamp": "2026-03-22T18:30:00+08:00",
   "data": {
-    "temperature": {
-      "type": "double",
-      "value": "2.55e+01"
-    },
-    "running": {
-      "type": "bool",
-      "value": "true"
-    },
-    "capturedAt": {
-      "type": "string",
-      "value": "2026-03-22T10:30:00Z"
-    }
+    "temperature": 25.5,
+    "running": true,
+    "capturedAt": "2026-03-22T10:30:00Z"
   }
 }
 ```
 
-Step 4: when a downstream node receives that payload on its own `input1`, the SDK decodes it before delivery and the handler sees this `neoedgex.Message`. A `string` field decodes to a Go `string`:
+Step 4: when a downstream node receives that payload on its own `input1`, the handler decodes it with `msg.ToMap()` and each field arrives as the concrete Go type of the downstream input schema:
 
 ```go
-neoedgex.Message{
-	Handle:    "input1",
-	Source:    "publisher-node",
-	Timestamp: "2026-03-22T10:30:00Z",
-	Data: map[string]any{
-		"temperature": 25.5,
-		"running":     true,
-		"capturedAt":  "2026-03-22T10:30:00Z",
-	},
-}
+msg := <-ctx.Messages()
+// msg.Handle == "input1", msg.Source == "publisher-node", msg.Timestamp == "2026-03-22T18:30:00+08:00"
+
+data := msg.ToMap()
+// data == map[string]any{
+// 	"temperature": 25.5,                   // double -> float64
+// 	"running":     true,                   // bool -> bool
+// 	"capturedAt":  "2026-03-22T10:30:00Z", // string -> string
+// }
 ```
 
 ## Mock Development Flow
@@ -825,26 +872,62 @@ Minimal mock config shape:
 }
 ```
 
+What that file has to get right:
+
+- `mock.messages[].nodeID` must be exactly one of the `nodes[].id` values, and `handle` should be one the same node declares under `inputs`. A `nodeID` that matches no node delivers nothing at all — the only sign is a `[MOCK INJECT] error: no subscriber for node ...` warning in the log. A `handle` the node does not declare still delivers, but with no input schema behind it, so every value arrives untyped.
+- messages are injected one per tick, cycling through the list from the top and starting about half a second after the app comes up. To exercise several inputs, list one message per input and let them rotate.
+- `messageInterval` is a Go duration string such as `"3s"` or `"500ms"`. Missing, unparseable, or not positive falls back to 3s, with no error.
+- injected values keep the stringified `type`/`value` form: floats in scientific notation (`"2.55e+01"`), `raw` as base64, bool as `"true"` / `"false"`. The SDK converts each entry to its native Go value at injection time, so the handler sees the same decoded values as in production. An entry with an empty `type` injects an undefined field, which is how you exercise the `nil` path.
+- every injected message arrives with `Source` `"mock"` and an empty `Timestamp`.
+- there is no broker, so what your handler publishes is visible only in the log, as `[MOCK PUBLISH]` lines carrying the topic and the decoded payload. Heartbeats appear the same way, with an empty payload. `DisableSDKLog()` hides all of it.
+
 `neoedgex.LoadMockConfig(...)` is a convenience wrapper around `mock.LoadConfig(...)`. If your mock main already imports `neoedgex/mock`, prefer keeping `mock.LoadConfig(...)` so the mock configuration source stays explicit.
 
 Do not enable mock mode in production deployment.
 
 ## Unit Test Helper
 
-When unit-testing your own `NodeHandler`, use `neoedgex/testutil.MockNodeEnv` to create a test `NodeEnv`. It lets you set `Config`, `MessageChan`, `DoneChan`, `MockLogger`, and `PublishErr`, and records `PublishedData`, `ReportedErrors`, and `StopCalled` after the handler runs.
+`neoedgex/testutil` runs your `NodeHandler` without a platform and without a broker:
+
+- `MockNodeEnv` stands in for the `NodeEnv` the SDK passes to `Handle`. Set `Config` to the node configuration under test, and optionally `MockLogger`, `DoneChan` (closing it cancels `ctx.Context()`) and `PublishErr` (the error every `Publish` call returns). After the handler has finished, read `PublishedData`, `ReportedErrors` and `StopCalled`.
+- `env.NewMessage(handle, data)` builds an incoming message from the input schema in `Config`, so its fields decode to exactly the types the SDK would deliver in production. It panics if `handle` is not declared in `Config.Data.Inputs`.
+- `env.Deliver(msgs...)` queues those messages and closes the channel, which is what lets a `for range ctx.Messages()` loop return so the test can assert.
 
 ```go
-ctx := &testutil.MockNodeEnv{
-	Config:      nodeConfig,
-	MessageChan: messages,
-}
+func TestExampleApp(t *testing.T) {
+	env := &testutil.MockNodeEnv{Config: neoedgex.Node{
+		ID: "node-1",
+		Data: contract.NodeData{
+			Name: "demo-node",
+			Inputs: map[string][]contract.PortFieldSchema{
+				"input1": {{Key: "temperature", Type: contract.TypeDouble}},
+			},
+			Outputs: map[string][]contract.PortFieldSchema{
+				"output1": {{Key: "power", Type: contract.TypeDouble}},
+			},
+		},
+	}}
 
-handler.Handle(ctx)
+	env.Deliver(env.NewMessage("input1", map[string]any{"temperature": 25.5}))
 
-if len(ctx.PublishedData) == 0 {
-	t.Fatal("expected published data")
+	(&ExampleApp{}).Handle(env)
+
+	if len(env.PublishedData) != 1 {
+		t.Fatalf("expected 1 published message, got %d", len(env.PublishedData))
+	}
+	published := env.PublishedData[0]
+	if published.Handle != "output1" || published.Data["power"] != 42.0 {
+		t.Fatalf("unexpected publish: %+v", published)
+	}
 }
 ```
+
+Two things to keep in mind:
+
+- `PublishedData` records the map your handler passed to `Publish`, unchanged. Nothing is converted to the output schema types and nothing is dropped, so assert on the values your handler produced, not on what would reach the next node.
+- Read `PublishedData`, `ReportedErrors` and `StopCalled` only after the handler has returned. While it is still running, they are being written from its goroutine.
+
+Without a node configuration at hand — when testing decode logic on its own — `testutil.NewMessage(handle, testutil.Fields{...})` builds a message with the type written next to each value: `{Value: float32(25.34), Type: contract.TypeDouble}` reproduces a `double` tag the upstream node sent at single precision, and `Type: testutil.Undeclared` marks a key the input schema does not declare.
 
 Use this package only in tests. Production app entrypoints do not need to import `neoedgex/testutil`.
 
@@ -855,28 +938,31 @@ The SDK is responsible for:
 - SDK initialization and shutdown
 - node instance lifecycle
 - message transport integration
-- periodic heartbeats and status publication
+- periodic heartbeats
+- publishing the errors your handler reports
 - process signal handling
-- handler supervision
+- handler supervision and restart
 
 As a handler author, you are responsible for:
 
 - reading messages from `ctx.Messages()`
 - implementing your business logic
 - publishing output and reporting errors correctly
-- using `ctx.Context()` as the root context for workers, connects, watchers, HTTP, DB, gRPC, and other long-running work started by the handler
+- using `ctx.Context()` as the root context for workers, HTTP, DB, gRPC, and other long-running work
 - using `ctx.Logger()` when you need node-scoped logs
 - returning when `ctx.Messages()` is closed
 
-Important runtime rules:
+Runtime rules:
 
-- each matched node runs `Handle(ctx)` in its own goroutine
+- every node in the configuration runs `Handle(ctx)` in its own goroutine; the SDK does no filtering, and the same handler value serves all of them, so it must be safe for concurrent use
 - if your handler panics, the SDK recovers and treats it as a node failure
 - if your handler returns early while the node is still active, the SDK treats it as abnormal and restarts it
 - if shutdown is intentional and the message channel closes, your handler should return normally
 - if your handler detects a fatal initialization error, call `ctx.ReportError(neoedgex.CodeInitializationError, err)`, then `ctx.Stop()`, then return
 - the incoming message channel has a buffer of 4096; if your handler processes messages slower than they arrive and the buffer fills up, incoming messages are dropped — the SDK internally calls `ReportError` but the dropped messages cannot be recovered
+- a second, much smaller queue sits between the broker and that channel; when a burst overflows it, the message is dropped with only a warning in the log and no reported error, so the count of reported drops is a lower bound
 - calling `ctx.Stop()` also cancels `ctx.Context()`; any HTTP clients, DB connections, worker goroutines, or other long-running work that uses `ctx.Context()` for cancellation propagation will be interrupted
+- `ctx.Stop()` ends this node only: sibling nodes of the same app keep running, `Run()` does not return, and the process stays up until the platform stops the container
 
 For example:
 
@@ -891,25 +977,39 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 ## Common Pitfalls
 
 - Returning from `Handle` too early. The normal steady-state model is to loop over `ctx.Messages()`.
-- Treating a missing key and a present-but-`nil` value in `msg.Data` as the same condition.
-- Depending on non-public repository paths instead of the documented SDK surface.
+- Treating a missing key and a present-but-`nil` value in the `msg.ToMap()` result as the same condition.
+- Using non-pointer struct fields with `msg.ToStruct(...)` for fields where your app must distinguish an actual zero from an undefined value; only pointer (or `any`) fields keep that distinction.
+- Leaving a `msg.ToStruct(...)` field untagged and expecting it to match a lower-case key.
+- Importing anything under `internal/` instead of the public packages.
 - Leaving mock mode enabled in production code.
-- Assuming every input tag in `msg.Data` always contains a directly usable value; in practice, some fields may be `nil`, and the app needs to decide how to handle them.
+- Assuming every input tag always contains a directly usable value; in practice, some fields may be `nil` (undefined), and the app needs to decide how to handle them.
 
 ## Changelog
 
 This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Most recent releases first.
 
+### v2.1.0 — unreleased
+
+**BREAKING message-format change.** NeoFlow data messages now travel as CBOR instead of JSON, and field values are carried as native CBOR values instead of stringified `type`/`value` pairs. Apps built with earlier SDK versions cannot exchange NeoFlow messages with v2.1.0 apps; rebuild against this version.
+
+- **Message format.** A data message is a CBOR map with three top-level keys — `source`, `timestamp`, and `data`; `data` maps each output key directly to its native value with no per-field type wrapper. An undefined field is CBOR null. `raw` fields are native CBOR byte strings — they are no longer base64-encoded before being sent. The move to CBOR covers data messages only: the error topic payload stays JSON and heartbeats stay empty.
+- **Reading `Message.Data`.** `Message.Data` is now a `RawMessage` holding the `data` section still CBOR-encoded, instead of a decoded `map[string]any`. Decode it with `msg.ToMap()` (each field as the Go type its input schema declares) or `msg.ToStruct(&T)`. With `ToStruct`, a non-pointer field stays at its Go zero value when the received value is undefined and cannot distinguish "zero" from "no value"; declare pointer fields to keep that distinction (CBOR null decodes to a nil pointer).
+- **What your handler receives.** Each input field is decoded as the concrete Go type of the `type` declared for that tag in the input schema. A received value of a different type is converted through the same cross-type conversion rules `Publish` uses (range checks, float-to-int truncation, string-to-number parsing); unconvertible values are delivered as undefined (`nil`). Keys present in the received message but not declared in the input schema are passed through as the plain Go value the CBOR decoder produces (every float arrives as `float64`), limited to the Go types the SDK delivers — a value outside them, such as a whole number beyond `int64` / `uint64` range, arrives as undefined (`nil`).
+- **Removed** the `jsonObject` / `jsonArray` data types (with their `TypeJsonObject` / `TypeJsonArray` constants), `(*App).UseRawJson()`, the `json.RawMessage` pass-through, and the pre-built `PortFieldData` pass-through on `Publish`. The type set is now the 11 scalar types: `int16`, `int32`, `int64`, `uint16`, `uint32`, `uint64`, `float`, `double`, `bool`, `string`, `raw`.
+- **Removed** the top-level `time.Time` convenience conversion: `Publish` now rejects `time.Time` values; format times to strings in the app (e.g. `t.Format(time.RFC3339)`).
+- **Added** NaN / ±Inf rejection: publishing a NaN or infinite float fails the field conversion, and the field is published as undefined.
+- **Added** the remaining Go integer kinds as accepted `Publish` input: `int`, `uint`, `int8` and `uint8` now convert to the declared tag type like the sized kinds, so `map[string]any{"count": 5}` works. The tag types are unchanged, and so are the range checks.
+
 ### v2.0.0 — 2026-07-09
 
 **BREAKING.** A tag, parameter, or port field is now described by `type` alone; the separate `format` concept is gone.
 
-- **Removed** the `DataFormat` type and its whole `Format*` enum, along with `ConvertValueByFormat`, `TypeFormatMap`, `DataFormat.GetType()`, and the `Format` field on `PortFieldData` / `PortFieldSchema`. Wire payloads and schemas now carry `type` and `value` only.
+- **Removed** the `DataFormat` type and its whole `Format*` enum, along with `ConvertValueByFormat`, `TypeFormatMap`, `DataFormat.GetType()`, and the `Format` field on `PortFieldData` / `PortFieldSchema`. Message payloads and schemas now carry `type` and `value` only.
 - **Value API is now type-based.** Use `ConvertValueByType(value string, t DataType) (any, error)` and `func (DataType) CanConvertTo(DataType) bool`. `ConvertAnyValue` now returns `(string, DataType, error)`.
-- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; a time value is carried in a `string` field, and its string format is decided by the application — the SDK imposes none. `base64` is replaced by the `raw` type. `raw` is `[]byte` in **both** directions — the handler reads `[]byte` from `msg.Data`, and a `[]byte` passed to `Publish` is base64-encoded on the wire by the SDK; `raw` only converts to `raw`.
+- **Removed formats.** The time formats `second` / `millisecond` / `datetime` are gone; a time value is carried in a `string` field, and its string format is decided by the application — the SDK imposes none. `base64` is replaced by the `raw` type. `raw` is `[]byte` in **both** directions — the handler reads `[]byte` from `msg.Data`, and a `[]byte` passed to `Publish` is base64-encoded by the SDK before being sent; `raw` only converts to `raw`.
 - **Added** `jsonObject` and `jsonArray` DataTypes. Their `value` is a JSON-encoded string with strict validation: `null` is rejected, and object-vs-array is enforced; they do not cross-convert to any other type. The json fields the handler reads from `Message.Data` decode to `map[string]any` / `[]any` by default (or `json.RawMessage` with `UseRawJson()`). For a json field passed to `Publish`, exactly three Go forms are accepted: `map[string]any` and `[]any` (SDK-marshaled), and `json.RawMessage` (strict-validated, then written verbatim so big integers keep full precision). Structs are not auto-marshaled and must be marshaled to `json.RawMessage` by the application.
 - **Added** the `(*App).UseRawJson()` option. When set, the `jsonObject` / `jsonArray` fields the handler reads from `Message.Data` are delivered as `json.RawMessage` (validated original bytes) instead of `map[string]any` / `[]any`, preserving large-integer precision and re-marshalling verbatim for forwarders. Validation is unchanged; non-JSON types are unaffected.
-- **Added** pre-built `PortFieldData` pass-through on `Publish`. A value in the `Publish` data map may itself be a `PortFieldData` (or `*PortFieldData`) already holding a wire-form `type`/`value`; the SDK validates the embedded value against its type, then uses it verbatim when the field type matches (byte-exact, so json big integers keep full precision) or converts it per the existing `CanConvertTo` matrix (json never cross-converts). A `TypeUndefined` (empty) `PortFieldData` behaves exactly like a `nil` value and is sent as an empty field with no error.
+- **Added** pre-built `PortFieldData` pass-through on `Publish`. A value in the `Publish` data map may itself be a `PortFieldData` (or `*PortFieldData`) already holding an encoded `type`/`value` pair; the SDK validates the embedded value against its type, then uses it verbatim when the field type matches (byte-exact, so json big integers keep full precision) or converts it per the existing `CanConvertTo` rules (json never cross-converts). A `TypeUndefined` (empty) `PortFieldData` behaves exactly like a `nil` value and is sent as an empty field with no error.
 - **Import path.** Per Go Semantic Import Versioning, the module path is now `github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2`. Install with `go get github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2` and import from `.../neoedgex-v4-app-sdk-go/v2/neoedgex`.
 - **Migration.** Describe every field by `DataType` only and drop all `format` fields from schemas and payloads. Replace `ConvertValueByFormat` calls with `ConvertValueByType`, and gate conversions with `DataType.CanConvertTo`.
 

@@ -22,11 +22,12 @@ type stubSDK struct {
 	ctx context.Context
 }
 
-func (s stubSDK) Context() context.Context         { return s.ctx }
-func (s stubSDK) NodeConfigs() []contract.Node     { return nil }
-func (s stubSDK) Messenger() core.MessengerClient  { return nil }
-func (s stubSDK) NewLogger(string) contract.Logger { return noopLogger{} }
-func (s stubSDK) Shutdown()                        {}
+func (s stubSDK) Context() context.Context                { return s.ctx }
+func (s stubSDK) NodeConfigs() []contract.Node            { return nil }
+func (s stubSDK) Messenger() core.MessengerClient         { return nil }
+func (s stubSDK) NewLogger(string) contract.Logger        { return noopLogger{} }
+func (s stubSDK) NewHandlerLogger(string) contract.Logger { return noopLogger{} }
+func (s stubSDK) Shutdown()                               {}
 
 func TestConnectReturnsErrorWhenConfigIsNil(t *testing.T) {
 	client := NewMessenger(stubSDK{ctx: context.Background()}, &core.MessengerOptions{

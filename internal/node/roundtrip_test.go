@@ -1,25 +1,23 @@
 package node
 
-// This file houses a two-node (upstream -> downstream) round-trip integration
-// test. It proves that EVERY contract.DataType survives a real
-// Publish -> wire (json) -> decode -> handler trip with full fidelity.
+// Two-node (upstream -> downstream) round-trip integration tests over the
+// CBOR wire. They prove every contract.DataType survives a real
+// Instance.Publish -> CBOR envelope -> real runLoop decode -> Message accessor
+// trip with full fidelity, and pin the four-quadrant behaviors end to end:
+// undefined propagation (D15), the shared cross-type conversion matrix on
+// schema mismatch (D13), unknown-tag bypass, and integer-precision guards
+// (no 9.22e+18-style float64 corruption).
 //
-// Downstream-injection seam chosen: a real receiving *Instance* driven by a
-// shared in-memory routing messenger (routingMessenger). The upstream app calls
-// the real Instance.Publish (real NewPortFieldDataWithAny + real json.Marshal);
-// the produced bytes are routed by topic -> the downstream instance's
-// subscriber channel; the downstream instance's real runLoop performs the real
-// json.Unmarshal + real decodeIncomingData and delivers a contract.Message on
-// Messages(). This is strictly more faithful than a capture -> unmarshal ->
-// decodeIncomingData boundary because it exercises the genuine receive loop and
-// handler-dispatch path end to end, and it needs no new production harness --
-// routingMessenger is test-only and implements the existing
-// core.MessengerClient interface.
+// The rig: a shared in-memory routingMessenger routes a Publish on topic
+// "neoedgex/neoflow/out/<sourceID>/<handle>" into every registered downstream
+// subscriber channel, tagging the payload with the parsed <handle>. The
+// downstream instance's real runLoop performs the real CBOR unmarshal, the
+// O(1) map gate and the input-schema injection, then delivers a
+// contract.Message on Messages().
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -31,10 +29,6 @@ import (
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
-// routingMessenger is an in-memory core.MessengerClient that routes a Publish
-// on topic "neoedgex/neoflow/out/<sourceID>/<handle>" into the subscriber
-// channel registered by any downstream node, tagging the payload with the parsed
-// <handle>. Error/heartbeat topics are ignored (they are not "out" messages).
 type routingMessenger struct {
 	mu          sync.Mutex
 	subscribers map[string]chan core.RawMessengerPayload
@@ -47,18 +41,18 @@ func newRoutingMessenger() *routingMessenger {
 }
 
 // routingSDK is a testSDK whose Messenger() returns an interface-typed client,
-// so the shared routingMessenger can back both instances. (testSDK.messenger is
-// concretely *testMessenger and cannot hold a routingMessenger.)
+// so the shared routingMessenger can back both instances.
 type routingSDK struct {
 	ctx       context.Context
 	messenger core.MessengerClient
 }
 
-func (s *routingSDK) Context() context.Context         { return s.ctx }
-func (s *routingSDK) NodeConfigs() []contract.Node     { return nil }
-func (s *routingSDK) Messenger() core.MessengerClient  { return s.messenger }
-func (s *routingSDK) NewLogger(string) contract.Logger { return testLogger{} }
-func (s *routingSDK) Shutdown()                        {}
+func (s *routingSDK) Context() context.Context                { return s.ctx }
+func (s *routingSDK) NodeConfigs() []contract.Node            { return nil }
+func (s *routingSDK) Messenger() core.MessengerClient         { return s.messenger }
+func (s *routingSDK) NewLogger(string) contract.Logger        { return testLogger{} }
+func (s *routingSDK) NewHandlerLogger(string) contract.Logger { return testLogger{} }
+func (s *routingSDK) Shutdown()                               {}
 
 func (m *routingMessenger) Connect() error { return nil }
 func (m *routingMessenger) Disconnect()    {}
@@ -76,8 +70,8 @@ func (m *routingMessenger) AddSubscriber(nodeID string) <-chan core.RawMessenger
 }
 
 // waitForSubscriber blocks until at least one downstream node has registered a
-// subscriber, closing the startup race between `go down.runLoop()` (which calls
-// AddSubscriber) and the upstream Publish.
+// subscriber, closing the startup race between `go down.runLoop()` (which
+// calls AddSubscriber) and the upstream Publish.
 func (m *routingMessenger) waitForSubscriber(t *testing.T) {
 	t.Helper()
 	m.mu.Lock()
@@ -102,10 +96,10 @@ func (m *routingMessenger) RemoveSubscriber(nodeID string) {
 	delete(m.subscribers, nodeID)
 }
 
-// Publish routes an outbound neoflow message to every registered subscriber.
-// Topic shape: neoedgex/neoflow/out/<sourceNodeID>/<handle>. Anything that is
-// not an "out" message (heartbeat/error) is dropped, mirroring a downstream node
-// that only subscribes to its wired input topics.
+// Publish routes an outbound neoflow data message to every registered
+// subscriber. Topic shape: neoedgex/neoflow/out/<sourceNodeID>/<handle>.
+// Heartbeat/error topics are dropped, mirroring a downstream node that only
+// subscribes to its wired input topics.
 func (m *routingMessenger) Publish(topic string, _ byte, data []byte) error {
 	parts := strings.Split(topic, "/")
 	// neoedgex / neoflow / out / <id> / <handle>
@@ -119,28 +113,28 @@ func (m *routingMessenger) Publish(topic string, _ byte, data []byte) error {
 	for _, ch := range m.subscribers {
 		ch <- core.RawMessengerPayload{
 			Handle: handle,
-			// Copy the bytes so the downstream sees exactly the wire payload.
-			Data: append([]byte(nil), data...),
+			Data:   append([]byte(nil), data...),
 		}
 	}
 	return nil
 }
 
-// twoNodeRig builds a shared messenger plus an upstream and downstream Instance.
-// The downstream declares an input handle so the receive loop forwards messages;
-// the upstream declares an output handle carrying exactly the given schema.
-func twoNodeRig(t *testing.T, outputSchema []contract.PortFieldSchema, downstreamRawJson bool) (up *Instance, down *Instance, messenger *routingMessenger) {
+// twoNodeRig builds a shared messenger plus an upstream and downstream
+// Instance. Both sides use handle "port": the upstream declares it as an
+// output with outputSchema, the downstream as an input with inputSchema —
+// letting tests model matched schemas, schema drift and unknown tags.
+func twoNodeRig(t *testing.T, outputSchema, inputSchema []contract.PortFieldSchema) (up *Instance, down *Instance) {
 	t.Helper()
-	messenger = newRoutingMessenger()
+	messenger := newRoutingMessenger()
 
 	up, err := NewInstance(&routingSDK{ctx: context.Background(), messenger: messenger}, contract.Node{
 		ID:   "upstream-node",
 		Type: "producer",
 		Data: contract.NodeData{
 			Name:    "upstream-app",
-			Outputs: map[string][]contract.PortFieldSchema{"out": outputSchema},
+			Outputs: map[string][]contract.PortFieldSchema{"port": outputSchema},
 		},
-	}, false)
+	})
 	if err != nil {
 		t.Fatalf("failed to build upstream instance: %v", err)
 	}
@@ -150,9 +144,9 @@ func twoNodeRig(t *testing.T, outputSchema []contract.PortFieldSchema, downstrea
 		Type: "consumer",
 		Data: contract.NodeData{
 			Name:   "downstream-app",
-			Inputs: map[string][]contract.PortFieldSchema{"in": {}},
+			Inputs: map[string][]contract.PortFieldSchema{"port": inputSchema},
 		},
-	}, downstreamRawJson)
+	})
 	if err != nil {
 		t.Fatalf("failed to build downstream instance: %v", err)
 	}
@@ -160,19 +154,16 @@ func twoNodeRig(t *testing.T, outputSchema []contract.PortFieldSchema, downstrea
 	go down.runLoop()
 	t.Cleanup(down.Shutdown)
 	messenger.waitForSubscriber(t)
-	return up, down, messenger
+	return up, down
 }
 
-// upstreamPublish is the "upstream app": it Publishes a payload on handle "out".
 func upstreamPublish(t *testing.T, up *Instance, payload map[string]any) {
 	t.Helper()
-	if err := up.Publish("out", payload); err != nil {
+	if err := up.Publish("port", payload); err != nil {
 		t.Fatalf("upstream Publish failed: %v", err)
 	}
 }
 
-// downstreamReceive is the "downstream app": it waits for the decoded Message the
-// real receive loop delivers and returns its Data map for assertion.
 func downstreamReceive(t *testing.T, down *Instance) contract.Message {
 	t.Helper()
 	select {
@@ -184,14 +175,15 @@ func downstreamReceive(t *testing.T, down *Instance) contract.Message {
 	}
 }
 
-// roundTrip runs one upstream Publish -> downstream receive using a single-field
-// output schema, and returns the decoded downstream value for the field.
-func roundTrip(t *testing.T, fieldType contract.DataType, value any, downstreamRawJson bool) any {
+// roundTrip publishes one single-field payload through matched schemas and
+// returns the downstream ToMap value for the field.
+func roundTrip(t *testing.T, fieldType contract.DataType, value any) any {
 	t.Helper()
-	up, down, _ := twoNodeRig(t, []contract.PortFieldSchema{{Key: "f", Type: fieldType}}, downstreamRawJson)
+	schema := []contract.PortFieldSchema{{Key: "f", Type: fieldType}}
+	up, down := twoNodeRig(t, schema, schema)
 	upstreamPublish(t, up, map[string]any{"f": value})
 	msg := downstreamReceive(t, down)
-	return msg.Data["f"]
+	return msg.ToMap()["f"]
 }
 
 // -----------------------------------------------------------------------------
@@ -214,7 +206,7 @@ func TestRoundTripScalars(t *testing.T) {
 		{"int16-max", contract.TypeInt16, int16(math.MaxInt16), int16(math.MaxInt16)},
 		{"int32-neg", contract.TypeInt32, int32(-2000000000), int32(-2000000000)},
 		{"int32-max", contract.TypeInt32, int32(math.MaxInt32), int32(math.MaxInt32)},
-		{"int64-neg", contract.TypeInt64, int64(-9000000000000000000), int64(-9000000000000000000)},
+		{"int64-min", contract.TypeInt64, int64(math.MinInt64), int64(math.MinInt64)},
 		{"int64-max", contract.TypeInt64, int64(math.MaxInt64), int64(9223372036854775807)},
 
 		{"uint16-max", contract.TypeUint16, uint16(math.MaxUint16), uint16(math.MaxUint16)},
@@ -236,7 +228,7 @@ func TestRoundTripScalars(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := roundTrip(t, tc.fieldType, tc.value, false)
+			got := roundTrip(t, tc.fieldType, tc.value)
 			if fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", tc.want) {
 				t.Fatalf("round-trip mismatch: got %#v, want %#v", got, tc.want)
 			}
@@ -244,8 +236,44 @@ func TestRoundTripScalars(t *testing.T) {
 	}
 }
 
+// TestRoundTripIntegerExtremesNoFloatCorruption is the dedicated precision
+// guard: int64/uint64 extremes must arrive as exact integers, never as a
+// float64 rendered like 9.223372036854776e+18.
+func TestRoundTripIntegerExtremesNoFloatCorruption(t *testing.T) {
+	schema := []contract.PortFieldSchema{
+		{Key: "imax", Type: contract.TypeInt64},
+		{Key: "imin", Type: contract.TypeInt64},
+		{Key: "umax", Type: contract.TypeUint64},
+	}
+	up, down := twoNodeRig(t, schema, schema)
+	upstreamPublish(t, up, map[string]any{
+		"imax": int64(math.MaxInt64),
+		"imin": int64(math.MinInt64),
+		"umax": uint64(math.MaxUint64),
+	})
+	got := downstreamReceive(t, down).ToMap()
+
+	if v, ok := got["imax"].(int64); !ok || v != math.MaxInt64 {
+		t.Fatalf("imax: got %#v (%T)", got["imax"], got["imax"])
+	}
+	if v, ok := got["imin"].(int64); !ok || v != math.MinInt64 {
+		t.Fatalf("imin: got %#v (%T)", got["imin"], got["imin"])
+	}
+	if v, ok := got["umax"].(uint64); !ok || v != math.MaxUint64 {
+		t.Fatalf("umax: got %#v (%T)", got["umax"], got["umax"])
+	}
+	for k, v := range got {
+		if _, isFloat := v.(float64); isFloat {
+			t.Fatalf("field %q arrived as float64: %v", k, v)
+		}
+		if s := fmt.Sprintf("%v", v); strings.Contains(s, "e+") {
+			t.Fatalf("field %q rendered in float notation: %s", k, s)
+		}
+	}
+}
+
 // -----------------------------------------------------------------------------
-// raw ([]byte): byte-identical round-trip through the base64 wire encoding.
+// raw ([]byte): byte-identical round-trip as a native CBOR byte string.
 // -----------------------------------------------------------------------------
 
 func TestRoundTripRawBytes(t *testing.T) {
@@ -254,14 +282,14 @@ func TestRoundTripRawBytes(t *testing.T) {
 		value []byte
 	}{
 		{"ascii", []byte("payload")},
-		// Bytes that are not valid UTF-8 -- must survive base64 exactly.
+		// Bytes that are not valid UTF-8 -- must survive the wire exactly.
 		{"non-utf8", []byte{0x00, 0xff, 0xfe, 0x80, 0x01}},
 		{"empty", []byte{}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := roundTrip(t, contract.TypeRaw, tc.value, false)
+			got := roundTrip(t, contract.TypeRaw, tc.value)
 			gotBytes, ok := got.([]byte)
 			if !ok {
 				t.Fatalf("expected []byte downstream, got %T (%#v)", got, got)
@@ -274,186 +302,185 @@ func TestRoundTripRawBytes(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// jsonObject / jsonArray -- default (parsed) mode: downstream gets map/[]any.
+// undefined propagation (D15): explicit nil, absent-but-declared, and
+// Publish-side conversion failure all arrive as nil downstream.
 // -----------------------------------------------------------------------------
 
-func TestRoundTripJsonObjectDefaultMode(t *testing.T) {
-	input := json.RawMessage(`{"name":"widget","count":3,"nested":{"ok":true},"list":[1,2]}`)
-	got := roundTrip(t, contract.TypeJsonObject, input, false)
-
-	obj, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]any downstream, got %T (%#v)", got, got)
-	}
-	if obj["name"] != "widget" {
-		t.Fatalf("unexpected name: %#v", obj["name"])
-	}
-	// Default mode uses encoding/json, so numbers land as float64.
-	if obj["count"] != float64(3) {
-		t.Fatalf("unexpected count: %#v", obj["count"])
-	}
-	nested, ok := obj["nested"].(map[string]any)
-	if !ok || nested["ok"] != true {
-		t.Fatalf("unexpected nested object: %#v", obj["nested"])
-	}
-	list, ok := obj["list"].([]any)
-	if !ok || len(list) != 2 || list[0] != float64(1) || list[1] != float64(2) {
-		t.Fatalf("unexpected nested list: %#v", obj["list"])
-	}
-}
-
-func TestRoundTripJsonArrayDefaultMode(t *testing.T) {
-	input := json.RawMessage(`["a",2,{"k":"v"},[9,8]]`)
-	got := roundTrip(t, contract.TypeJsonArray, input, false)
-
-	arr, ok := got.([]any)
-	if !ok {
-		t.Fatalf("expected []any downstream, got %T (%#v)", got, got)
-	}
-	if len(arr) != 4 {
-		t.Fatalf("unexpected array length: %#v", arr)
-	}
-	if arr[0] != "a" || arr[1] != float64(2) {
-		t.Fatalf("unexpected scalar elements: %#v", arr)
-	}
-	if m, ok := arr[2].(map[string]any); !ok || m["k"] != "v" {
-		t.Fatalf("unexpected object element: %#v", arr[2])
-	}
-	if inner, ok := arr[3].([]any); !ok || len(inner) != 2 || inner[0] != float64(9) {
-		t.Fatalf("unexpected inner array: %#v", arr[3])
-	}
-}
-
-func TestRoundTripEmptyJsonContainersDefaultMode(t *testing.T) {
-	t.Run("empty-object", func(t *testing.T) {
-		got := roundTrip(t, contract.TypeJsonObject, json.RawMessage(`{}`), false)
-		obj, ok := got.(map[string]any)
-		if !ok || len(obj) != 0 {
-			t.Fatalf("expected empty map[string]any, got %T (%#v)", got, got)
-		}
-	})
-	t.Run("empty-array", func(t *testing.T) {
-		got := roundTrip(t, contract.TypeJsonArray, json.RawMessage(`[]`), false)
-		arr, ok := got.([]any)
-		if !ok || len(arr) != 0 {
-			t.Fatalf("expected empty []any, got %T (%#v)", got, got)
-		}
-	})
-}
-
-// -----------------------------------------------------------------------------
-// jsonObject / jsonArray -- raw mode: downstream gets json.RawMessage byte-exact,
-// including a >2^53 integer that must NOT be rounded through float64.
-// -----------------------------------------------------------------------------
-
-func TestRoundTripJsonRawModeByteExactBigInt(t *testing.T) {
-	const rounded = "9223372036854776000" // the float64-corrupted form we must NOT see
-
-	t.Run("object-nested-big-int", func(t *testing.T) {
-		input := json.RawMessage(`{"id":9223372036854775807,"nested":{"big":9223372036854775807}}`)
-		got := roundTrip(t, contract.TypeJsonObject, input, true)
-
-		raw, ok := got.(json.RawMessage)
-		if !ok {
-			t.Fatalf("expected json.RawMessage downstream in raw mode, got %T (%#v)", got, got)
-		}
-		if !bytes.Equal(raw, input) {
-			t.Fatalf("raw jsonObject not byte-exact:\n got  %q\n want %q", string(raw), string(input))
-		}
-		if strings.Contains(string(raw), rounded) {
-			t.Fatalf("big integer was rounded through float64: %q", string(raw))
-		}
-	})
-
-	t.Run("array-big-int", func(t *testing.T) {
-		input := json.RawMessage(`[9223372036854775807,1,9223372036854775807]`)
-		got := roundTrip(t, contract.TypeJsonArray, input, true)
-
-		raw, ok := got.(json.RawMessage)
-		if !ok {
-			t.Fatalf("expected json.RawMessage downstream in raw mode, got %T (%#v)", got, got)
-		}
-		if !bytes.Equal(raw, input) {
-			t.Fatalf("raw jsonArray not byte-exact:\n got  %q\n want %q", string(raw), string(input))
-		}
-		if strings.Contains(string(raw), rounded) {
-			t.Fatalf("big integer was rounded through float64: %q", string(raw))
-		}
-	})
-
-	t.Run("empty-object", func(t *testing.T) {
-		input := json.RawMessage(`{}`)
-		got := roundTrip(t, contract.TypeJsonObject, input, true)
-		raw, ok := got.(json.RawMessage)
-		if !ok || !bytes.Equal(raw, input) {
-			t.Fatalf("expected byte-exact empty object, got %T (%#v)", got, got)
-		}
-	})
-
-	t.Run("empty-array", func(t *testing.T) {
-		input := json.RawMessage(`[]`)
-		got := roundTrip(t, contract.TypeJsonArray, input, true)
-		raw, ok := got.(json.RawMessage)
-		if !ok || !bytes.Equal(raw, input) {
-			t.Fatalf("expected byte-exact empty array, got %T (%#v)", got, got)
-		}
-	})
-}
-
-// -----------------------------------------------------------------------------
-// nil round-trips as nil: an explicit nil field, and a field defined in the
-// schema but absent from the published data, both arrive as decoded nil.
-// -----------------------------------------------------------------------------
-
-func TestRoundTripNilFieldDecodesAsNil(t *testing.T) {
+func TestRoundTripUndefinedArrivesAsNil(t *testing.T) {
 	schema := []contract.PortFieldSchema{
 		{Key: "present", Type: contract.TypeInt64},
 		{Key: "explicitNil", Type: contract.TypeInt64},
 		{Key: "absent", Type: contract.TypeString},
+		{Key: "rejected", Type: contract.TypeInt16},
 	}
-	up, down, _ := twoNodeRig(t, schema, false)
+	up, down := twoNodeRig(t, schema, schema)
 
-	// "present" carries a real value; "explicitNil" is published as nil;
-	// "absent" is defined in the schema but omitted from the data map.
 	upstreamPublish(t, up, map[string]any{
 		"present":     int64(42),
 		"explicitNil": nil,
+		// out of int16 range -> nulled at Publish time (conversion failure)
+		"rejected": int64(70000),
 	})
-	msg := downstreamReceive(t, down)
+	got := downstreamReceive(t, down).ToMap()
 
-	if got, ok := msg.Data["present"].(int64); !ok || got != 42 {
-		t.Fatalf("present field: got %#v, want int64(42)", msg.Data["present"])
+	if v, ok := got["present"].(int64); !ok || v != 42 {
+		t.Fatalf("present field: got %#v, want int64(42)", got["present"])
 	}
-	if v, exists := msg.Data["explicitNil"]; !exists || v != nil {
-		t.Fatalf("explicit nil did not round-trip as nil: exists=%v value=%#v", exists, v)
-	}
-	if v, exists := msg.Data["absent"]; !exists || v != nil {
-		t.Fatalf("absent-but-declared field did not round-trip as nil: exists=%v value=%#v", exists, v)
+	for _, key := range []string{"explicitNil", "absent", "rejected"} {
+		v, exists := got[key]
+		if !exists {
+			t.Fatalf("undefined field %q must be present with nil value", key)
+		}
+		if v != nil {
+			t.Fatalf("field %q did not arrive as nil: %#v", key, v)
+		}
 	}
 }
 
 // -----------------------------------------------------------------------------
-// Matrix drift guard: every entry in contract.SupportedTypes must be exercised
-// by this file. If a new DataType is added, this test fails until a round-trip
+// Cross-end schema drift (D13): the downstream input schema differs from the
+// upstream output schema — values are normalized through the SAME conversion
+// matrix; denied/failed conversions arrive as undefined (nil).
+// -----------------------------------------------------------------------------
+
+func TestRoundTripCrossTypeSchemaDrift(t *testing.T) {
+	outputSchema := []contract.PortFieldSchema{
+		{Key: "trunc", Type: contract.TypeDouble},  // double -> int16: truncated
+		{Key: "coerce", Type: contract.TypeString}, // string -> int32: parsed
+		{Key: "broken", Type: contract.TypeInt64},  // 70000 -> int16: undefined
+		{Key: "widen", Type: contract.TypeInt16},   // int16 -> int64: widened
+		{Key: "strRaw", Type: contract.TypeString}, // string -> raw: denied
+	}
+	inputSchema := []contract.PortFieldSchema{
+		{Key: "trunc", Type: contract.TypeInt16},
+		{Key: "coerce", Type: contract.TypeInt32},
+		{Key: "broken", Type: contract.TypeInt16},
+		{Key: "widen", Type: contract.TypeInt64},
+		{Key: "strRaw", Type: contract.TypeRaw},
+	}
+	up, down := twoNodeRig(t, outputSchema, inputSchema)
+
+	upstreamPublish(t, up, map[string]any{
+		"trunc":  float64(2.9),
+		"coerce": "42",
+		"broken": int64(70000),
+		"widen":  int16(-5),
+		"strRaw": "hi",
+	})
+	got := downstreamReceive(t, down).ToMap()
+
+	want := map[string]any{
+		"trunc":  int16(2),
+		"coerce": int32(42),
+		"broken": nil,
+		"widen":  int64(-5),
+		"strRaw": nil,
+	}
+	for k, w := range want {
+		if fmt.Sprintf("%#v", got[k]) != fmt.Sprintf("%#v", w) {
+			t.Fatalf("field %q: got %#v, want %#v", k, got[k], w)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Unknown-tag bypass: keys the downstream schema does not declare pass through
+// in the natural domain (positive int <= MaxInt64 -> int64, larger -> uint64).
+// -----------------------------------------------------------------------------
+
+func TestRoundTripUnknownTagBypassesInNaturalDomain(t *testing.T) {
+	outputSchema := []contract.PortFieldSchema{
+		{Key: "known", Type: contract.TypeInt64},
+		{Key: "ghost", Type: contract.TypeUint64},
+		{Key: "ghostBig", Type: contract.TypeUint64},
+	}
+	inputSchema := []contract.PortFieldSchema{
+		{Key: "known", Type: contract.TypeInt64},
+	}
+	up, down := twoNodeRig(t, outputSchema, inputSchema)
+
+	upstreamPublish(t, up, map[string]any{
+		"known":    int64(1),
+		"ghost":    uint64(5),
+		"ghostBig": uint64(math.MaxUint64),
+	})
+	got := downstreamReceive(t, down).ToMap()
+
+	if v, ok := got["known"].(int64); !ok || v != 1 {
+		t.Fatalf("known: got %#v", got["known"])
+	}
+	if v, ok := got["ghost"].(int64); !ok || v != 5 {
+		t.Fatalf("ghost must bypass as natural-domain int64: got %#v (%T)", got["ghost"], got["ghost"])
+	}
+	if v, ok := got["ghostBig"].(uint64); !ok || v != math.MaxUint64 {
+		t.Fatalf("ghostBig must stay uint64: got %#v (%T)", got["ghostBig"], got["ghostBig"])
+	}
+}
+
+// -----------------------------------------------------------------------------
+// ToStruct across the wire: declared type wins, any takes the schema type,
+// pointer keeps the undefined distinction.
+// -----------------------------------------------------------------------------
+
+func TestRoundTripToStruct(t *testing.T) {
+	schema := []contract.PortFieldSchema{
+		{Key: "temp", Type: contract.TypeInt16},
+		{Key: "ratio", Type: contract.TypeDouble},
+		{Key: "name", Type: contract.TypeString},
+		{Key: "absent", Type: contract.TypeDouble},
+	}
+	up, down := twoNodeRig(t, schema, schema)
+
+	upstreamPublish(t, up, map[string]any{
+		"temp":  int16(1234),
+		"ratio": float64(2.5),
+		"name":  "sensor-A",
+	})
+	msg := downstreamReceive(t, down)
+
+	type myInput struct {
+		Temp   int32    `cbor:"temp"`  // declared wider than schema -> declaration wins
+		Ratio  any      `cbor:"ratio"` // any -> schema-typed (double)
+		Name   string   `cbor:"name"`
+		Absent *float64 `cbor:"absent"` // pointer keeps undefined as nil
+	}
+	var in myInput
+	if err := msg.ToStruct(&in); err != nil {
+		t.Fatalf("unexpected ToStruct error: %v", err)
+	}
+	if in.Temp != 1234 {
+		t.Fatalf("Temp: got %v, want 1234 as int32", in.Temp)
+	}
+	if v, ok := in.Ratio.(float64); !ok || v != 2.5 {
+		t.Fatalf("Ratio: got %#v (%T), want float64(2.5)", in.Ratio, in.Ratio)
+	}
+	if in.Name != "sensor-A" {
+		t.Fatalf("Name: got %q", in.Name)
+	}
+	if in.Absent != nil {
+		t.Fatalf("Absent: got %v, want nil pointer", in.Absent)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Drift guard: every entry in contract.SupportedTypes must be exercised by
+// this file. If a new DataType is added, this test fails until a round-trip
 // case is added for it above.
 // -----------------------------------------------------------------------------
 
 func TestRoundTripCoversEverySupportedType(t *testing.T) {
-	// Types with dedicated round-trip cases in this file.
 	covered := map[contract.DataType]struct{}{
-		contract.TypeBool:       {},
-		contract.TypeInt16:      {},
-		contract.TypeInt32:      {},
-		contract.TypeInt64:      {},
-		contract.TypeUint16:     {},
-		contract.TypeUint32:     {},
-		contract.TypeUint64:     {},
-		contract.TypeFloat:      {},
-		contract.TypeDouble:     {},
-		contract.TypeString:     {},
-		contract.TypeRaw:        {},
-		contract.TypeJsonObject: {},
-		contract.TypeJsonArray:  {},
+		contract.TypeBool:   {},
+		contract.TypeInt16:  {},
+		contract.TypeInt32:  {},
+		contract.TypeInt64:  {},
+		contract.TypeUint16: {},
+		contract.TypeUint32: {},
+		contract.TypeUint64: {},
+		contract.TypeFloat:  {},
+		contract.TypeDouble: {},
+		contract.TypeString: {},
+		contract.TypeRaw:    {},
 	}
 
 	for dt := range contract.SupportedTypes {

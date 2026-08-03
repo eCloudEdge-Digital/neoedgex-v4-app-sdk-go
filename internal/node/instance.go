@@ -7,40 +7,61 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
 type Instance struct {
-	sdk         core.SDK
-	logger      contract.Logger
-	nodeConfig  contract.Node
-	messageChan chan contract.Message
-	ctx         context.Context
-	cancel      context.CancelFunc
-	useRawJson  bool
+	sdk core.SDK
+	// logger carries SDK machinery output and is silenced by App.DisableSDKLog;
+	// handlerLogger is what the application writes through and is never
+	// silenced. Keep the split when adding log calls: anything the SDK says
+	// about itself goes to logger.
+	logger        contract.Logger
+	handlerLogger contract.Logger
+	nodeConfig    contract.Node
+	messageChan   chan contract.Message
+	inputPlans    map[string]contract.DecodePlan
+	outputKeys    map[string]map[string]struct{}
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
-// NewInstance creates a node instance. When useRawJson is true, inbound
-// jsonObject/jsonArray fields are delivered to the handler as json.RawMessage
-// (validated original bytes) instead of parsed map[string]any/[]any.
-func NewInstance(sdk core.SDK, nodeConfig contract.Node, useRawJson bool) (*Instance, error) {
+func NewInstance(sdk core.SDK, nodeConfig contract.Node) (*Instance, error) {
 	if sdk == nil {
 		return nil, fmt.Errorf("sdk is nil")
 	}
 
-	logger := sdk.NewLogger(fmt.Sprintf("Node-%s", nodeConfig.Data.Name))
+	tag := fmt.Sprintf("Node-%s", nodeConfig.Data.Name)
+	logger := sdk.NewLogger(tag)
 	logger.Debug("Initializing node instance")
+
+	inputPlans := make(map[string]contract.DecodePlan, len(nodeConfig.Data.Inputs))
+	for handle, schema := range nodeConfig.Data.Inputs {
+		inputPlans[handle] = contract.NewDecodePlan(schema)
+	}
+	outputKeys := make(map[string]map[string]struct{}, len(nodeConfig.Data.Outputs))
+	for handle, schema := range nodeConfig.Data.Outputs {
+		keys := make(map[string]struct{}, len(schema))
+		for _, fieldDef := range schema {
+			keys[fieldDef.Key] = struct{}{}
+		}
+		outputKeys[handle] = keys
+	}
 
 	instanceCtx, instanceCancel := context.WithCancel(sdk.Context())
 	return &Instance{
-		sdk:         sdk,
-		logger:      logger,
-		nodeConfig:  nodeConfig,
-		messageChan: make(chan contract.Message, 4096),
-		ctx:         instanceCtx,
-		cancel:      instanceCancel,
-		useRawJson:  useRawJson,
+		sdk:           sdk,
+		logger:        logger,
+		handlerLogger: sdk.NewHandlerLogger(tag),
+		nodeConfig:    nodeConfig,
+		messageChan:   make(chan contract.Message, 4096),
+		inputPlans:    inputPlans,
+		outputKeys:    outputKeys,
+		ctx:           instanceCtx,
+		cancel:        instanceCancel,
 	}, nil
 }
 
@@ -58,7 +79,7 @@ func (instance *Instance) NodeConfig() contract.Node {
 }
 
 func (instance *Instance) Logger() contract.Logger {
-	return instance.logger
+	return instance.handlerLogger
 }
 
 // Messages returns a channel of incoming messages.
@@ -145,46 +166,49 @@ func (instance *Instance) Publish(handle string, data map[string]any) error {
 	}
 
 	// Warn on tags supplied by the handler that the schema does not define.
-	definedKeys := make(map[string]struct{}, len(desiredOutput))
-	for _, fieldDef := range desiredOutput {
-		definedKeys[fieldDef.Key] = struct{}{}
-	}
+	definedKeys := instance.outputKeys[handle]
 	for key := range data {
 		if _, ok := definedKeys[key]; !ok {
 			instance.logger.Warn("Tag %q is not defined in the output schema; dropping", key)
 		}
 	}
 
-	// Convert handler-facing Go values into the typed NeoFlow output payload.
-	portFields := make(map[string]contract.PortFieldData, len(desiredOutput))
+	// Convert handler-facing Go values into schema-typed native values;
+	// undefined (missing/nil/conversion-failed) fields go out as CBOR null.
+	dataMap := make(map[string]any, len(desiredOutput))
 	for _, fieldDef := range desiredOutput {
 		rawValue, provided := data[fieldDef.Key]
 		if !provided {
 			instance.logger.Debug("Output field %q not provided, sending nil", fieldDef.Key)
-			portFields[fieldDef.Key] = *contract.NewEmptyField()
+			dataMap[fieldDef.Key] = nil
 			continue
 		} else if isNilAnyValue(rawValue) {
 			instance.logger.Debug("Output field %q provided with nil value, sending nil", fieldDef.Key)
-			portFields[fieldDef.Key] = *contract.NewEmptyField()
+			dataMap[fieldDef.Key] = nil
 			continue
 		}
 
-		pf, err := contract.NewPortFieldDataWithAny(rawValue, fieldDef.Type)
+		typedValue, err := contract.ConvertToTypedValue(rawValue, fieldDef.Type)
 		if err != nil {
-			portFields[fieldDef.Key] = *contract.NewEmptyField()
-			instance.ReportError(contract.CodeProcessError, fmt.Errorf("field %q: %w", fieldDef.Key, err))
+			dataMap[fieldDef.Key] = nil
+			instance.ReportError(contract.CodeProcessError, fmt.Errorf("field %q (value type '%T'): %w", fieldDef.Key, rawValue, err))
 			continue
 		}
-		portFields[fieldDef.Key] = *pf
+		dataMap[fieldDef.Key] = typedValue
+	}
+
+	dataBytes, err := cbor.Marshal(dataMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal neoflow data: %v", err)
 	}
 
 	message := contract.NeoFlowMessage{
 		SourceNodeID: instance.nodeConfig.ID,
 		Timestamp:    time.Now().Format(time.RFC3339),
-		Data:         portFields,
+		Data:         dataBytes,
 	}
 
-	bytes, err := json.Marshal(message)
+	bytes, err := cbor.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("failed to marshal neoflow message: %v", err)
 	}
@@ -221,31 +245,6 @@ func (instance *Instance) ReportError(code contract.ErrorCode, err error) {
 func (instance *Instance) PublishHeartbeat() error {
 	topic := fmt.Sprintf("neoedgex/neoflow/heartbeat/%s", instance.nodeConfig.ID)
 	return instance.sdk.Messenger().Publish(topic, 0, []byte{})
-}
-
-func decodeIncomingData(data map[string]contract.PortFieldData, useRawJson bool) map[string]any {
-	decoded := make(map[string]any, len(data))
-	for key, field := range data {
-		if field.Type == contract.TypeUndefined {
-			decoded[key] = nil
-			continue
-		}
-		var value any
-		var err error
-		if useRawJson {
-			// Raw mode: json types are validated then returned as json.RawMessage;
-			// all other types decode exactly as the default path.
-			value, err = contract.ConvertValueByTypeRaw(field.Value, field.Type)
-		} else {
-			value, err = field.GetAnyValue()
-		}
-		if err != nil {
-			decoded[key] = nil
-			continue
-		}
-		decoded[key] = value
-	}
-	return decoded
 }
 
 func isNilAnyValue(anyValue any) bool {
@@ -287,20 +286,33 @@ func (instance *Instance) runLoop() {
 			}
 
 			var neoflowMessage contract.NeoFlowMessage
-			if err := json.Unmarshal(payload.Data, &neoflowMessage); err != nil {
-				instance.logger.Error("Failed to unmarshal neoflow message: %v", err)
+			if err := cbor.Unmarshal(payload.Data, &neoflowMessage); err != nil {
+				err = fmt.Errorf("failed to unmarshal neoflow message: %v", err)
+				instance.logger.Error(err.Error())
+				instance.ReportError(contract.CodeProcessError, err)
+				continue
+			}
+
+			// O(1) wire gate: the data segment must be a CBOR map (major type
+			// 5, incl. indefinite-length 0xbf); anything else is dropped whole.
+			if len(neoflowMessage.Data) == 0 || neoflowMessage.Data[0]&0xe0 != 0xa0 {
+				err := fmt.Errorf("neoflow message data segment is not a CBOR map, dropping message")
+				instance.logger.Error(err.Error())
+				instance.ReportError(contract.CodeProcessError, err)
 				continue
 			}
 
 			select {
 			case <-instance.ctx.Done():
 				instance.logger.Info("Context done, exiting run loop")
-			case instance.messageChan <- contract.Message{
-				Handle:    payload.Handle,
-				Data:      decodeIncomingData(neoflowMessage.Data, instance.useRawJson),
-				Source:    neoflowMessage.SourceNodeID,
-				Timestamp: neoflowMessage.Timestamp,
-			}:
+			case instance.messageChan <- contract.NewMessage(
+				neoflowMessage.SourceNodeID,
+				neoflowMessage.Timestamp,
+				payload.Handle,
+				contract.RawMessage(neoflowMessage.Data),
+				instance.inputPlans[payload.Handle],
+				instance.logger,
+			):
 			default:
 				err := fmt.Errorf("message channel is full, dropping incoming message")
 				instance.logger.Warn(err.Error())

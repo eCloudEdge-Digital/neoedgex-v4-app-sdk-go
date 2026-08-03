@@ -29,55 +29,52 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		var requestBody []byte
 		switch msg.Handle {
 		case "input1":
-			// 範例：input1 攜帶 temperature (int32)
-			var temperature int32
-			if value, exists := msg.Data["temperature"]; !exists {
+			// 範例：input1 攜帶 temperature (int32)。
+			// msg.ToMap() 依 input schema 解碼成原生 Go 值；undefined
+			//（key 不存在、上游沒給值、或轉換失敗）一律呈現為 nil。
+			data := msg.ToMap()
+			value, exists := data["temperature"]
+			if !exists {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined in input1 schema"))
 				continue
-			} else if value == nil {
+			}
+			if value == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no temperature value in input1 message"))
 				continue
-			} else if castedValue, ok := value.(int32); !ok {
+			}
+			temperature, ok := value.(int32)
+			if !ok {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("temperature is not defined as int32 in input1 schema"))
 				continue
-			} else {
-				temperature = castedValue
 			}
 			apiPath = "/temperature"
 			requestBody = []byte(fmt.Sprintf(`{"value": %d}`, temperature))
 
 		case "input2":
-			// 範例：input2 攜帶 running (bool)
-			var running bool
-			if value, exists := msg.Data["running"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running is not defined in input2 schema"))
+			// 範例：input2 攜帶 running (bool)，改用 msg.ToStruct 解碼。
+			// undefined 時 ToStruct 不會動到欄位；宣告成指標才能區分
+			// 「false」與「沒有值」（undefined 時指標維持 nil）。
+			var in struct {
+				Running *bool `cbor:"running"`
+			}
+			if err := msg.ToStruct(&in); err != nil {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("failed to decode input2 message: %w", err))
 				continue
-			} else if value == nil {
+			}
+			if in.Running == nil {
 				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no running value in input2 message"))
 				continue
-			} else if castedValue, ok := value.(bool); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("running is not defined as bool in input2 schema"))
-				continue
-			} else {
-				running = castedValue
 			}
 			apiPath = "/status"
-			requestBody = []byte(fmt.Sprintf(`{"running": %t}`, running))
+			requestBody = []byte(fmt.Sprintf(`{"running": %t}`, *in.Running))
 
 		case "input3":
 			// 範例：input3 攜帶 message (string)
-			var message string
-			if value, exists := msg.Data["message"]; !exists {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined in input3 schema"))
+			data := msg.ToMap()
+			message, ok := data["message"].(string)
+			if !ok {
+				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no message string value in input3 message"))
 				continue
-			} else if value == nil {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("no message value in input3 message"))
-				continue
-			} else if castedValue, ok := value.(string); !ok {
-				ctx.ReportError(neoedgex.CodeProcessError, fmt.Errorf("message is not defined as string in input3 schema"))
-				continue
-			} else {
-				message = castedValue
 			}
 			apiPath = "/event"
 			body, err := json.Marshal(map[string]string{"message": message})
@@ -102,7 +99,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 		// 範例：將剛剛呼叫的 API path 與回應狀態碼發布至 output1
 		if err := ctx.Publish("output1", map[string]any{
 			"api_path":        apiPath,
-			"response_status": int32(resp.StatusCode),
+			"response_status": resp.StatusCode,
 		}); err != nil {
 			ctx.ReportError(neoedgex.CodeProcessError, err)
 		}

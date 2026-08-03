@@ -17,6 +17,9 @@ import (
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
+// mountPath is the container mount root written by the platform, not an SDK choice:
+// the platform provides config/config.json (node configs) and config/messenger.json
+// (MQTT credentials) underneath it.
 const mountPath = "/opt/neoedgex"
 
 type sdk struct {
@@ -43,8 +46,10 @@ func NewSDK() *sdk {
 	return &sdk{}
 }
 
-// DisableLog 停用 SDK 內部所有 log 輸出（包含 node instance 的內部 log）。
-// 必須在 Initialize() 之前呼叫。
+// DisableLog silences every logger the SDK uses for its own machinery,
+// including each node instance's internal log. Loggers handed to application
+// code by NewHandlerLogger are not affected. Must be called before
+// Initialize().
 func (s *sdk) DisableLog() {
 	s.disableLog = true
 }
@@ -124,6 +129,10 @@ func (s *sdk) NewLogger(tag string) contract.Logger {
 	if s.disableLog {
 		return logger.NewNoopLogger()
 	}
+	return logger.NewLogger(tag)
+}
+
+func (s *sdk) NewHandlerLogger(tag string) contract.Logger {
 	return logger.NewLogger(tag)
 }
 

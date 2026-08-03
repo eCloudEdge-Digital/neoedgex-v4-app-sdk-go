@@ -1,13 +1,21 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/fxamacker/cbor/v2"
+
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/core"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/internal/node"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
+	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
 type noopLogger struct{}
@@ -120,5 +128,185 @@ func TestMockMessengerPublishLogsOutboundPayload(t *testing.T) {
 	}
 	if !foundX || !foundY {
 		t.Fatalf("expected both publish calls to be logged, got: %v", logger.infos)
+	}
+}
+
+// TestMockMessengerPublishLogsCBORPayloadHumanReadable pins that a CBOR data
+// message is decoded for the mock log output (human-readable), while the
+// error-topic JSON branch keeps working (both wire formats are attempted).
+func TestMockMessengerPublishLogsCBORPayloadHumanReadable(t *testing.T) {
+	logger := &recordingLogger{}
+	m := newMockMessenger(logger)
+
+	payload, err := cbor.Marshal(map[string]any{"temperature": 25.5})
+	if err != nil {
+		t.Fatalf("unexpected marshal error: %v", err)
+	}
+	if err := m.Publish("neoedgex/neoflow/out/n1/output1", 2, payload); err != nil {
+		t.Fatalf("unexpected publish error: %v", err)
+	}
+
+	found := false
+	for _, line := range logger.infos {
+		if strings.Contains(line, "[MOCK PUBLISH]") && strings.Contains(line, "temperature") && strings.Contains(line, "25.5") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected CBOR payload to be logged decoded, got: %v", logger.infos)
+	}
+}
+
+// TestInjectNeoFlowMessageBuildsCBOREnvelopeWithNativeValues pins the mock
+// injection seam (deviation (g)): the mock config keeps PortFieldData JSON
+// form, but the injected wire message is a CBOR envelope whose data map holds
+// NATIVE values (double -> float64, raw -> []byte, undefined -> null).
+func TestInjectNeoFlowMessageBuildsCBOREnvelopeWithNativeValues(t *testing.T) {
+	m := newMockMessenger(noopLogger{})
+	ch := m.AddSubscriber("n1")
+
+	err := m.injectNeoFlowMessage("n1", "input1", map[string]contract.PortFieldData{
+		"temperature": {Type: contract.TypeDouble, Value: "25.5"},
+		"count":       {Type: contract.TypeInt64, Value: "9223372036854775807"},
+		"blob":        {Type: contract.TypeRaw, Value: "AAECAP8="}, // base64 in config only
+		"empty":       *contract.NewEmptyField(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected inject error: %v", err)
+	}
+
+	var payload core.RawMessengerPayload
+	select {
+	case payload = <-ch:
+	default:
+		t.Fatal("expected an injected payload on the subscriber channel")
+	}
+	if payload.Handle != "input1" {
+		t.Fatalf("unexpected handle: %q", payload.Handle)
+	}
+
+	var env contract.NeoFlowMessage
+	if err := cbor.Unmarshal(payload.Data, &env); err != nil {
+		t.Fatalf("injected payload is not a CBOR envelope: %v", err)
+	}
+	if env.SourceNodeID != "mock" {
+		t.Fatalf("unexpected source: %q", env.SourceNodeID)
+	}
+
+	var fields map[string]cbor.RawMessage
+	if err := cbor.Unmarshal(env.Data, &fields); err != nil {
+		t.Fatalf("data segment is not a CBOR map: %v", err)
+	}
+
+	var temperature float64
+	if err := cbor.Unmarshal(fields["temperature"], &temperature); err != nil || temperature != 25.5 {
+		t.Fatalf("temperature not a native double: %v %v", err, temperature)
+	}
+	var count int64
+	if err := cbor.Unmarshal(fields["count"], &count); err != nil || count != 9223372036854775807 {
+		t.Fatalf("count corrupted: %v %d", err, count)
+	}
+	var blob []byte
+	if err := cbor.Unmarshal(fields["blob"], &blob); err != nil || len(blob) != 5 || blob[4] != 0xff {
+		t.Fatalf("blob not a native byte string: %v % x", err, blob)
+	}
+	// the raw field must be a CBOR byte string on the wire, not base64 text
+	if fields["blob"][0]&0xe0 != 0x40 {
+		t.Fatalf("blob wire encoding is not a byte string: 0x%02x", fields["blob"][0])
+	}
+	if len(fields["empty"]) != 1 || fields["empty"][0] != 0xf6 {
+		t.Fatalf("undefined mock field must inject as CBOR null, got % x", []byte(fields["empty"]))
+	}
+}
+
+// TestInjectNeoFlowMessageRejectsUnknownSubscriber pins the error path.
+func TestInjectNeoFlowMessageRejectsUnknownSubscriber(t *testing.T) {
+	m := newMockMessenger(noopLogger{})
+	if err := m.injectNeoFlowMessage("ghost", "input1", nil); err == nil {
+		t.Fatal("expected error for missing subscriber")
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns what
+// was written. The loggers bind os.Stderr at construction time, so fn must
+// build them, not just use them.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe failed: %v", err)
+	}
+	original := os.Stderr
+	os.Stderr = writer
+
+	captured := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, reader)
+		captured <- buf.String()
+	}()
+
+	fn()
+
+	os.Stderr = original
+	_ = writer.Close()
+	out := <-captured
+	_ = reader.Close()
+	return out
+}
+
+// TestDisableLogSilencesSDKOutputOnlyDrives the whole DisableSDKLog chain on
+// real stderr: App.DisableSDKLog -> sdk.DisableLog -> node instance. Only the
+// SDK's own output goes quiet; the lines an app writes through
+// NodeEnv.Logger() must still reach stderr, which is what the option's name
+// has always promised.
+func TestDisableLogSilencesSDKOutputOnly(t *testing.T) {
+	t.Setenv("NEOEDGEX_LOG_LEVEL", "debug")
+
+	nodeConfig := contract.Node{ID: "n1", Type: "demo", Data: contract.NodeData{Name: "demo-node"}}
+
+	run := func(disable bool) string {
+		return captureStderr(t, func() {
+			s := NewSDK()
+			if disable {
+				s.DisableLog()
+			}
+			s.EnableMock(&mock.MockConfig{Nodes: []contract.Node{nodeConfig}})
+			if err := s.Initialize(); err != nil {
+				t.Errorf("unexpected initialize error: %v", err)
+				return
+			}
+			instance, err := node.NewInstance(s, s.NodeConfigs()[0])
+			if err != nil {
+				t.Errorf("unexpected instance error: %v", err)
+				return
+			}
+			s.NewLogger("SDK").Warn("sdk-machinery-line")
+			instance.Logger().Info("app-written-line")
+		})
+	}
+
+	silenced := run(true)
+	if strings.Contains(silenced, "sdk-machinery-line") {
+		t.Fatalf("DisableLog did not silence SDK output:\n%s", silenced)
+	}
+	if strings.Contains(silenced, "Initializing node instance") {
+		t.Fatalf("DisableLog did not silence the node instance's internal log:\n%s", silenced)
+	}
+	if !strings.Contains(silenced, "app-written-line") {
+		t.Fatalf("DisableLog swallowed the app's own log line:\n%s", silenced)
+	}
+	if !strings.Contains(silenced, "[Node-demo-node]") {
+		t.Fatalf("the app's log line lost its node tag:\n%s", silenced)
+	}
+
+	// Negative control: without DisableLog both kinds of line show up, so the
+	// assertions above cannot pass merely because nothing was logged at all.
+	audible := run(false)
+	for _, want := range []string{"sdk-machinery-line", "app-written-line", "Initializing node instance"} {
+		if !strings.Contains(audible, want) {
+			t.Fatalf("expected %q in default (non-silenced) output:\n%s", want, audible)
+		}
 	}
 }

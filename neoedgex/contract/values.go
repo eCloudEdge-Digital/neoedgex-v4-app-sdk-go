@@ -2,21 +2,42 @@ package contract
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"math"
 	"reflect"
 	"strconv"
-	"strings"
-	"time"
 )
 
-// PortFieldData 描述節點執行後，輸出資料的型別與實際值。
+// PortFieldData is a typed value container: one port field value held in
+// stringified form together with the schema type it is to be read as.
+//
+// It is not a wire type — NeoFlow messages carry native CBOR values and
+// publishing never produces one. It is used in two places. Device-facing
+// application code builds a field from a raw device value with
+// NewPortFieldDataWithString or NewPortFieldDataWithAny (NewEmptyField for
+// "no value") and reads it back out with GetValueAndCast. And a mock
+// configuration file stores exactly this shape: mock.MockMessage.Data is a map
+// of these, which the SDK converts to native Go values at injection time.
+//
+// The zero value is an empty field: TypeUndefined, from which GetAnyValue
+// returns an error.
 type PortFieldData struct {
-	Type  DataType `json:"type"`
-	Value string   `json:"value"`
+	// Type is the schema type Value is parsed as.
+	Type DataType `json:"type"`
+	// Value is the stringified value. NewPortFieldDataWithAny writes it in the
+	// form ConvertAnyValue produces (floats in scientific notation, raw as
+	// base64, bool as "true"/"false"); NewPortFieldDataWithString stores the
+	// caller's string verbatim, so "0025" stays "0025".
+	Value string `json:"value"`
 }
 
+// NewPortFieldDataWithString builds a field from an already-stringified value,
+// storing it verbatim. It fails if dataType is not declarable in a schema, or
+// if value does not parse as that type.
+//
+// TypeBool is the exception: it can never fail, because parsing a bool is a
+// plain value == "true" comparison. "TRUE", "1" and "garbage" are all accepted
+// and every one of them reads back as false. Normalize the string yourself
+// before calling if the input is not already "true"/"false".
 func NewPortFieldDataWithString(value string, dataType DataType) (*PortFieldData, error) {
 	if !dataType.IsSupported() {
 		return nil, fmt.Errorf("unsupported data type '%s'", dataType)
@@ -32,61 +53,45 @@ func NewPortFieldDataWithString(value string, dataType DataType) (*PortFieldData
 	}, nil
 }
 
+// NewPortFieldDataWithAny builds a field from a native Go value, converting it
+// to destType and then stringifying it, so the stored Value is normalized
+// (float64 25.34 becomes "2.534e+01", []byte becomes base64). It fails
+// wherever ConvertToTypedValue does — a nil value, a Go type with no schema
+// type such as a struct or a map, a value outside destType's range, or a
+// disallowed pair such as string to bool.
 func NewPortFieldDataWithAny(anyValue any, destType DataType) (*PortFieldData, error) {
-	if !destType.IsSupported() {
-		return nil, fmt.Errorf("unsupported data type '%s'", destType)
-	}
-	if isNilAnyValue(anyValue) {
-		return nil, fmt.Errorf("nil value is not supported for conversion")
-	}
-
-	// Outbound pass-through: an app (e.g. the neoflow processor) may already hold
-	// wire-form PortFieldData and hand it straight to Publish. Accept it without
-	// a parse/re-serialize round trip so json big-int precision is untouched.
-	switch pf := anyValue.(type) {
-	case *PortFieldData:
-		// A nil *PortFieldData is already caught by isNilAnyValue above.
-		return NewPortFieldDataWithAny(*pf, destType)
-	case PortFieldData:
-		// TypeUndefined (e.g. a NewEmptyField product) is treated exactly like a
-		// nil value: it goes out as an empty field, no error. Publish's nil
-		// pre-filter only catches Go-level nils, so a non-nil empty-typed
-		// PortFieldData reaches here; owning the case in the constructor keeps all
-		// PortFieldData semantics in one seam.
-		if pf.Type == TypeUndefined {
-			return NewEmptyField(), nil
-		}
-		// Validate the embedded value against its own type, then use the ORIGINAL
-		// string verbatim (the parsed result is discarded; for json types this is
-		// validation-only, so numeric precision and key order are preserved).
-		if _, err := ConvertValueByType(pf.Value, pf.Type); err != nil {
-			return nil, fmt.Errorf("value '%s' is not compatible with type '%s': %v", pf.Value, pf.Type, err)
-		}
-		// Route through the existing conversion matrix: same-type hits the verbatim
-		// early return (byte-exact), cross-type uses CanConvertTo (json cross-type
-		// is naturally denied). No new conversion rules.
-		return pf.ConvertTo(destType)
-	}
-
-	value, srcType, err := ConvertAnyValue(anyValue)
+	typed, err := ConvertToTypedValue(anyValue, destType)
 	if err != nil {
 		return nil, err
-	} else if !srcType.CanConvertTo(destType) {
-		return nil, fmt.Errorf("cannot convert from type '%s' to '%s'", srcType, destType)
 	}
 
-	return PortFieldData{
+	value, _, err := ConvertAnyValue(typed)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PortFieldData{
+		Type:  destType,
 		Value: value,
-		Type:  srcType,
-	}.ConvertTo(destType)
+	}, nil
 }
 
+// NewEmptyField returns a field carrying no value: TypeUndefined and an empty
+// Value. It is how a device driver represents a register it could not read.
+// GetAnyValue and GetValueAndCast return an error on such a field.
 func NewEmptyField() *PortFieldData {
 	return &PortFieldData{
 		Type: TypeUndefined,
 	}
 }
 
+// GetValueAndCast parses a field's value and returns it as T, giving the zero
+// value of T on error.
+//
+// The cast is a plain type assertion with no numeric widening, so T must be
+// exactly the Go type the field's schema type maps to: an int16 field yields
+// int16 and asking for int32 fails. It also fails whenever GetAnyValue does,
+// notably on an empty field.
 func GetValueAndCast[T any](PortFieldDataValue PortFieldData) (T, error) {
 	var zero T
 	if anyValue, err := PortFieldDataValue.GetAnyValue(); err != nil {
@@ -98,150 +103,86 @@ func GetValueAndCast[T any](PortFieldDataValue PortFieldData) (T, error) {
 	}
 }
 
+// GetAnyValue parses the field's Value as its Type and returns the native Go
+// value. It returns an error if Value does not parse, or if Type is
+// TypeUndefined, as it is on an empty field.
+//
+// A bool field never fails to parse: see ConvertValueByType.
 func (v PortFieldData) GetAnyValue() (any, error) {
 	return ConvertValueByType(v.Value, v.Type)
 }
 
+// ConvertTo returns the field re-expressed as destType, following the same
+// rules as ConvertToTypedValue, so it fails on a disallowed pair such as raw
+// to string and on a value out of the destination's range.
+//
+// When destType already equals the field's type it short-circuits: the field
+// is copied as-is without parsing Value, so an unparseable value is passed
+// through rather than reported.
 func (v PortFieldData) ConvertTo(destType DataType) (*PortFieldData, error) {
-	if !v.Type.CanConvertTo(destType) {
-		return nil, fmt.Errorf("cannot convert from type '%s' to '%s'", v.Type, destType)
-	}
-
-	srcType := v.Type
-	if srcType == destType {
+	if v.Type == destType {
 		return &v, nil
 	}
 
-	newValue, err := func() (string, error) {
-		srcValue := v.Value
-
-		switch destType {
-		case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble:
-			switch srcType {
-			case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64:
-				return convertIntTypeToNumberType(srcValue, srcType, destType)
-			case TypeFloat, TypeDouble:
-				return convertFloatTypeToNumberType(srcValue, srcType, destType)
-			case TypeBool:
-				return convertBoolTypeToNumberType(srcValue, destType)
-			case TypeString:
-				if rawValue, err := ConvertValueByType(srcValue, destType); err != nil {
-					return "", fmt.Errorf("cannot convert string to number: %v", err)
-				} else if value, dataType, err := ConvertAnyValue(rawValue); err != nil {
-					return "", fmt.Errorf("cannot convert string to number: %v", err)
-				} else if dataType != destType {
-					return "", fmt.Errorf("cannot convert string to number: incompatible type '%s'", dataType)
-				} else {
-					return value, nil
-				}
-			}
-
-		case TypeBool:
-			switch srcType {
-			case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble:
-				return convertNumberTypeToBoolType(srcValue, srcType)
-			}
-
-		case TypeString:
-			switch srcType {
-			case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64, TypeFloat, TypeDouble, TypeBool, TypeString:
-				// No conversion needed
-				return srcValue, nil
-			}
-
-		case TypeRaw:
-			// Only raw to raw conversion is supported
-			switch srcType {
-			case TypeRaw:
-				return srcValue, nil
-			}
-		}
-
-		return "", fmt.Errorf("internal error: unsupported destination type '%s'", destType)
-	}()
-
+	srcValue, err := v.GetAnyValue()
 	if err != nil {
 		return nil, err
 	}
 
-	return &PortFieldData{
-		Type:  destType,
-		Value: newValue,
-	}, nil
+	return NewPortFieldDataWithAny(srcValue, destType)
 }
 
-// Any value to string value conversion, along with detected source type.
+// ConvertAnyValue stringifies a native Go scalar value and reports the schema
+// type it was detected as.
+//
+// Floats are formatted in scientific notation at shortest round-trip
+// precision, so 25.34 becomes "2.534e+01", and []byte is base64-encoded.
+// Integers are plain decimal and bool becomes "true"/"false". A nil value, or
+// one whose Go type has no schema type (see GetDataType), returns an error
+// and TypeUndefined.
+//
+// The reported type follows GetDataType, so every Go integer kind is accepted
+// and the narrow ones widen: int8 reports int16, uint8 reports uint16, and the
+// unsized int and uint report int64 and uint64.
 func ConvertAnyValue(anyValue any) (string, DataType, error) {
 	if isNilAnyValue(anyValue) {
 		return "", TypeUndefined, fmt.Errorf("nil value is not supported for conversion")
 	}
 
-	switch GetDataType(anyValue) {
-	case TypeInt16, TypeInt32, TypeInt64:
-		switch intValue := anyValue.(type) {
-		case int16:
-			return strconv.FormatInt(int64(intValue), 10), TypeInt16, nil
-		case int32:
-			return strconv.FormatInt(int64(intValue), 10), TypeInt32, nil
-		case int64:
-			return strconv.FormatInt(intValue, 10), TypeInt64, nil
-		}
-
-	case TypeUint16, TypeUint32, TypeUint64:
-		switch uintValue := anyValue.(type) {
-		case uint16:
-			return strconv.FormatUint(uint64(uintValue), 10), TypeUint16, nil
-		case uint32:
-			return strconv.FormatUint(uint64(uintValue), 10), TypeUint32, nil
-		case uint64:
-			return strconv.FormatUint(uintValue, 10), TypeUint64, nil
-		}
-
-	case TypeFloat, TypeDouble:
-		switch floatValue := anyValue.(type) {
-		case float32:
-			return strconv.FormatFloat(float64(floatValue), 'e', -1, 32), TypeFloat, nil
-		case float64:
-			return strconv.FormatFloat(floatValue, 'e', -1, 64), TypeDouble, nil
-		}
-
-	case TypeString:
-		switch value := anyValue.(type) {
-		case string:
-			return value, TypeString, nil
-		case time.Time:
-			return value.Format(time.RFC3339), TypeString, nil
-		}
-
-	case TypeBool:
-		return strconv.FormatBool(anyValue.(bool)), TypeBool, nil
-
-	case TypeRaw:
-		return base64.StdEncoding.EncodeToString(anyValue.([]byte)), TypeRaw, nil
-
-	case TypeJsonObject, TypeJsonArray:
-		// json.RawMessage is written to the wire verbatim (after trimming
-		// surrounding whitespace) so big-integer precision and key order are
-		// preserved; map[string]any / []any are marshaled by the SDK.
-		if raw, ok := anyValue.(json.RawMessage); ok {
-			// GetDataType sniffed the shape; strict-validate the payload exactly
-			// like the inbound path (rejects null, malformed json, wrong shape).
-			shape := GetDataType(raw)
-			trimmed := strings.TrimSpace(string(raw))
-			if _, err := ConvertValueByType(trimmed, shape); err != nil {
-				return "", TypeUndefined, fmt.Errorf("invalid json.RawMessage: %v", err)
-			}
-			return trimmed, shape, nil
-		}
-
-		bytes, err := json.Marshal(anyValue)
-		if err != nil {
-			return "", TypeUndefined, fmt.Errorf("cannot marshal value of type '%T' to json: %v", anyValue, err)
-		}
-		return string(bytes), GetDataType(anyValue), nil
+	switch value := anyValue.(type) {
+	case int8:
+		return strconv.FormatInt(int64(value), 10), TypeInt16, nil
+	case int16:
+		return strconv.FormatInt(int64(value), 10), TypeInt16, nil
+	case int32:
+		return strconv.FormatInt(int64(value), 10), TypeInt32, nil
+	case int:
+		return strconv.FormatInt(int64(value), 10), TypeInt64, nil
+	case int64:
+		return strconv.FormatInt(value, 10), TypeInt64, nil
+	case uint8:
+		return strconv.FormatUint(uint64(value), 10), TypeUint16, nil
+	case uint16:
+		return strconv.FormatUint(uint64(value), 10), TypeUint16, nil
+	case uint32:
+		return strconv.FormatUint(uint64(value), 10), TypeUint32, nil
+	case uint:
+		return strconv.FormatUint(uint64(value), 10), TypeUint64, nil
+	case uint64:
+		return strconv.FormatUint(value, 10), TypeUint64, nil
+	case float32:
+		return strconv.FormatFloat(float64(value), 'e', -1, 32), TypeFloat, nil
+	case float64:
+		return strconv.FormatFloat(value, 'e', -1, 64), TypeDouble, nil
+	case string:
+		return value, TypeString, nil
+	case bool:
+		return strconv.FormatBool(value), TypeBool, nil
+	case []byte:
+		return base64.StdEncoding.EncodeToString(value), TypeRaw, nil
+	default:
+		return "", TypeUndefined, fmt.Errorf("unsupported value type '%T' for conversion", anyValue)
 	}
-
-	return "", TypeUndefined, fmt.Errorf("unsupported value type '%T' for conversion", anyValue)
 }
 
 func isNilAnyValue(anyValue any) bool {
@@ -258,7 +199,17 @@ func isNilAnyValue(anyValue any) bool {
 	}
 }
 
-// String value to any value conversion based on source type.
+// ConvertValueByType parses a stringified value into the concrete Go type of a
+// schema type — the inverse of ConvertAnyValue. Integers and floats go through
+// strconv, raw is base64-decoded and string is returned unchanged.
+//
+// The srcType parameter is misnamed: it is the DESTINATION type the value is
+// parsed as, as the function's own error text ("unsupported destination type")
+// says.
+//
+// TypeBool is the one branch that can never fail. It is a plain
+// value == "true" comparison, so "TRUE", "1", "yes" and "" all yield false
+// with a nil error rather than being rejected.
 func ConvertValueByType(value string, srcType DataType) (any, error) {
 	switch srcType {
 	case TypeInt16:
@@ -330,220 +281,7 @@ func ConvertValueByType(value string, srcType DataType) (any, error) {
 	case TypeBool:
 		return (value == "true"), nil
 
-	case TypeJsonObject:
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(value), &obj); err != nil {
-			return nil, err
-		} else if obj == nil {
-			return nil, fmt.Errorf("value '%s' is not a valid JSON object", value)
-		} else {
-			return obj, nil
-		}
-
-	case TypeJsonArray:
-		var arr []any
-		if err := json.Unmarshal([]byte(value), &arr); err != nil {
-			return nil, err
-		} else if arr == nil {
-			return nil, fmt.Errorf("value '%s' is not a valid JSON array", value)
-		} else {
-			return arr, nil
-		}
-
 	default:
 		return nil, fmt.Errorf("unsupported destination type '%s' for conversion", srcType)
-	}
-}
-
-// ConvertValueByTypeRaw is the raw-json variant of ConvertValueByType. For
-// jsonObject/jsonArray fields it validates the value exactly as the parsed path
-// does (rejecting null, malformed json, and the wrong shape) but returns the
-// original bytes as json.RawMessage instead of a parsed map/[]any, so callers
-// that forward the payload preserve numeric precision. All other types behave
-// identically to ConvertValueByType.
-func ConvertValueByTypeRaw(value string, srcType DataType) (any, error) {
-	switch srcType {
-	case TypeJsonObject:
-		// Validate shape/well-formedness via the parsed path, then discard the
-		// parsed result and hand back the original bytes verbatim.
-		if _, err := ConvertValueByType(value, srcType); err != nil {
-			return nil, err
-		}
-		return json.RawMessage(value), nil
-
-	case TypeJsonArray:
-		if _, err := ConvertValueByType(value, srcType); err != nil {
-			return nil, err
-		}
-		return json.RawMessage(value), nil
-
-	default:
-		return ConvertValueByType(value, srcType)
-	}
-}
-
-// Convert values whose src type is int type to dest number type.
-func convertIntTypeToNumberType(value string, src, dest DataType) (string, error) {
-	if src == dest {
-		return value, nil
-	}
-
-	switch dest {
-	case TypeInt16, TypeInt32, TypeInt64:
-		if intValue, err := strconv.ParseInt(value, 10, getBitSize(dest)); err != nil {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to int type '%s': %v", src, value, dest, err)
-		} else {
-			return strconv.FormatInt(intValue, 10), nil
-		}
-
-	case TypeUint16, TypeUint32, TypeUint64:
-		if uintValue, err := strconv.ParseUint(value, 10, getBitSize(dest)); err != nil {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to uint type '%s': %v", src, value, dest, err)
-		} else {
-			return strconv.FormatUint(uintValue, 10), nil
-		}
-
-	case TypeFloat, TypeDouble:
-		if floatValue, err := strconv.ParseFloat(value, getBitSize(dest)); err != nil {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to float type '%s': %v", src, value, dest, err)
-		} else {
-			return strconv.FormatFloat(floatValue, 'e', -1, getBitSize(dest)), nil
-		}
-
-	default:
-		return "", fmt.Errorf("internal error: unsupported destination type '%s' in int-to-number conversion", dest)
-	}
-}
-
-// Convert values whose src type is float type to dest number type.
-func convertFloatTypeToNumberType(value string, src, dest DataType) (string, error) {
-	if src == dest {
-		return value, nil
-	}
-
-	// float to float conversion
-	switch dest {
-	case TypeFloat:
-		// float64 -> float32
-		if floatValue, err := strconv.ParseFloat(value, 64); err != nil {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to float type '%s': %v", src, value, dest, err)
-		} else {
-			return strconv.FormatFloat(float64(float32(floatValue)), 'e', -1, 32), nil
-		}
-	case TypeDouble:
-		// float32 -> float64
-		return value, nil
-	}
-
-	// Parse float value and truncate fractional part
-	floatValue, err := strconv.ParseFloat(value, getBitSize(src))
-	if err != nil {
-		return "", fmt.Errorf("cannot parse '%s' value '%s' as float for conversion to type '%s': %v", src, value, dest, err)
-	} else if math.IsNaN(floatValue) {
-		return "", fmt.Errorf("cannot convert '%s' value '%s' to type '%s': value is NaN", src, value, dest)
-	} else if math.IsInf(floatValue, 0) {
-		return "", fmt.Errorf("cannot convert '%s' value '%s' to type '%s': value is Inf", src, value, dest)
-	} else {
-		// Truncate float value
-		floatValue = math.Trunc(floatValue)
-	}
-
-	// float to int/uint conversion
-	var isOutOfRange bool
-	switch dest {
-	case TypeInt16, TypeInt32, TypeInt64:
-		switch dest {
-		case TypeInt16:
-			isOutOfRange = (floatValue < math.MinInt16 || floatValue > math.MaxInt16)
-		case TypeInt32:
-			isOutOfRange = (floatValue < math.MinInt32 || floatValue > math.MaxInt32)
-		case TypeInt64:
-			isOutOfRange = (floatValue < math.MinInt64 || floatValue > math.MaxInt64)
-		}
-
-		if isOutOfRange {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to int type '%s': value out of range", src, value, dest)
-		} else {
-			return strconv.FormatInt(int64(floatValue), 10), nil
-		}
-
-	case TypeUint16, TypeUint32, TypeUint64:
-		switch dest {
-		case TypeUint16:
-			isOutOfRange = (floatValue < 0 || floatValue > math.MaxUint16)
-		case TypeUint32:
-			isOutOfRange = (floatValue < 0 || floatValue > math.MaxUint32)
-		case TypeUint64:
-			isOutOfRange = (floatValue < 0 || floatValue > math.MaxUint64)
-		}
-		if isOutOfRange {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to uint type '%s': value out of range", src, value, dest)
-		} else {
-			return strconv.FormatUint(uint64(floatValue), 10), nil
-		}
-
-	default:
-		return "", fmt.Errorf("internal error: unsupported destination type '%s' in float-to-number conversion", dest)
-	}
-}
-
-// Convert values whose src type is bool type to dest number type.
-func convertBoolTypeToNumberType(value string, dest DataType) (string, error) {
-	isTrue := value == "true"
-	switch dest {
-	case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64:
-		if isTrue {
-			return "1", nil
-		} else {
-			return "0", nil
-		}
-
-	case TypeFloat, TypeDouble:
-		var floatValue float64
-		if isTrue {
-			floatValue = 1.0
-		} else {
-			floatValue = 0.0
-		}
-		return strconv.FormatFloat(floatValue, 'e', -1, getBitSize(dest)), nil
-	}
-
-	return "", fmt.Errorf("internal error: unsupported destination type '%s' in bool-to-number conversion", dest)
-}
-
-// Convert values whose src type is number type to bool type.
-func convertNumberTypeToBoolType(value string, src DataType) (string, error) {
-	switch src {
-	case TypeInt16, TypeInt32, TypeInt64, TypeUint16, TypeUint32, TypeUint64:
-		if value == "0" {
-			return "false", nil
-		} else {
-			return "true", nil
-		}
-
-	case TypeFloat, TypeDouble:
-		if floatValue, err := strconv.ParseFloat(value, 64); err != nil {
-			return "", fmt.Errorf("cannot convert '%s' value '%s' to bool: %v", src, value, err)
-		} else if floatValue == 0.0 {
-			return "false", nil
-		} else {
-			return "true", nil
-		}
-	}
-
-	return "", fmt.Errorf("internal error: unsupported source type '%s' in number-to-bool conversion", src)
-}
-
-// Bit size
-func getBitSize(dataType DataType) int {
-	switch dataType {
-	case TypeInt16, TypeUint16:
-		return 16
-	case TypeInt32, TypeUint32, TypeFloat:
-		return 32
-	case TypeInt64, TypeUint64, TypeDouble:
-		return 64
-	default:
-		return -1
 	}
 }
