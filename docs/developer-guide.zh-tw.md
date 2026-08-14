@@ -349,7 +349,7 @@ NeoFlow 節點之間透過 MQTT 互相傳訊息：一則資料訊息就是一個
 - `Handle`：觸發此訊息的 input handle 名稱
 - `Data`：`RawMessage`，原樣持有這則訊息的 `data` 段，內容仍是 CBOR 編碼；不直接讀取，而是以 `msg.ToMap()` 或 `msg.ToStruct(...)` 解碼取值
 - `Source`：來源節點 ID
-- `Timestamp`：上游節點 publish 的時間，RFC3339 格式。它取自該節點自己的時鐘，因此除非機器跑在 UTC，否則會帶本地時區偏移（例如 `+08:00`）而不是 `Z`。上游 payload 未帶時間時為空字串——mock 注入的訊息一律如此
+- `Timestamp`：上游節點 publish 的時間，RFC3339 格式、精度到毫秒（`2026-03-22T18:30:00.123+08:00`）。它取自該節點自己的時鐘，因此除非機器跑在 UTC，否則會帶本地時區偏移（例如 `+08:00`）而不是 `Z`。上游 payload 未帶時間時為空字串——mock 注入的訊息一律如此。SDK 原封不動地傳遞這個字串，因此以舊版 SDK 發送的節點仍會帶精度到秒、沒有小數位的時間戳——用 `time.RFC3339` layout 解析即可，兩種都吃得下
 
 ### 讀取 Input 值
 
@@ -767,12 +767,12 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-步驟 3：SDK 在 publisher 這一側把 Go 值轉成 schema 型別後，把整則訊息編碼成 CBOR。訊息最外層有三個欄位：`source`（發送的節點）、`timestamp`（發送當下的時間，RFC3339 格式，取自容器的時鐘，因此帶本地時區偏移、未必是 `Z`）與 `data`（你 publish 的欄位）。以下以 CBOR diagnostic notation（CBOR 的人類可讀表示法）呈現——每個欄位直接帶原生值，沒有 per-field type 包裝：
+步驟 3：SDK 在 publisher 這一側把 Go 值轉成 schema 型別後，把整則訊息編碼成 CBOR。訊息最外層有三個欄位：`source`（發送的節點）、`timestamp`（發送當下的時間，RFC3339 格式、精度到毫秒，取自容器的時鐘，因此帶本地時區偏移、未必是 `Z`）與 `data`（你 publish 的欄位）。以下以 CBOR diagnostic notation（CBOR 的人類可讀表示法）呈現——每個欄位直接帶原生值，沒有 per-field type 包裝：
 
 ```text
 {
   "source": "publisher-node",
-  "timestamp": "2026-03-22T18:30:00+08:00",
+  "timestamp": "2026-03-22T18:30:00.123+08:00",
   "data": {
     "temperature": 25.5,
     "running": true,
@@ -785,7 +785,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 ```go
 msg := <-ctx.Messages()
-// msg.Handle == "input1"、msg.Source == "publisher-node"、msg.Timestamp == "2026-03-22T18:30:00+08:00"
+// msg.Handle == "input1"、msg.Source == "publisher-node"、msg.Timestamp == "2026-03-22T18:30:00.123+08:00"
 
 data := msg.ToMap()
 // data == map[string]any{
@@ -986,7 +986,11 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 本 SDK 遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。最新版本列在最前面。
 
-### v2.1.0 — unreleased
+### v2.2.0 — 2026-08-13
+
+- **訊息時間戳精度到毫秒。** 最外層 `timestamp` 由整秒改為 RFC3339 帶固定三位小數（`2026-03-22T10:30:00.123Z`），因此同一秒內採樣的資料不再被寫成相同時間。欄位仍為 CBOR text string，`time.RFC3339` layout 可解析兩種形式，故仍以秒精度發送的節點雙向皆可互通。以固定長度樣式驗證時間戳、或以不允許小數的 layout 解析的 consumer 必須調整。
+
+### v2.1.0 — 2026-08-03
 
 **BREAKING 訊息格式變更。** NeoFlow 資料訊息的格式由 JSON 改為 CBOR，欄位值以原生 CBOR 值傳遞，不再是字串化的 `type`/`value` 組合。以舊版 SDK 建置的 app 無法與 v2.1.0 app 交換 NeoFlow 訊息；請以本版重新建置。
 

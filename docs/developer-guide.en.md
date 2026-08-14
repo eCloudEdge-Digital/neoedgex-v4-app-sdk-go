@@ -350,7 +350,7 @@ Each handler receives a `neoedgex.NodeEnv`.
 - `Handle`: which input handle triggered this message
 - `Data`: a `RawMessage` holding the `data` section of the received message exactly as it arrived, still CBOR-encoded; you do not read it directly — decode it with `msg.ToMap()` or `msg.ToStruct(...)`
 - `Source`: source node ID
-- `Timestamp`: the time the upstream node published, in RFC3339 format. It is written from that node's own clock, so expect a local offset such as `+08:00` rather than `Z` unless the machine runs on UTC. It is an empty string when the upstream payload carries no time, which is the case for every mock-injected message
+- `Timestamp`: the time the upstream node published, in RFC3339 format with millisecond precision (`2026-03-22T18:30:00.123+08:00`). It is written from that node's own clock, so expect a local offset such as `+08:00` rather than `Z` unless the machine runs on UTC. It is an empty string when the upstream payload carries no time, which is the case for every mock-injected message. The SDK passes the string through untouched, so a node publishing from an older SDK still arrives with a second-precision stamp and no fraction — parse it with the `time.RFC3339` layout, which accepts both
 
 ### Reading Input Values
 
@@ -769,12 +769,12 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-Step 3: on the publisher side, the SDK converts those Go values to the schema types and encodes the whole message as CBOR. The message has three top-level fields: `source` (the publishing node), `timestamp` (the moment of publication, in RFC3339, taken from the container's clock — so it carries the local UTC offset, not necessarily `Z`), and `data` (your published fields). Shown here in CBOR diagnostic notation, the human-readable rendering of CBOR — each field carries its native value, with no per-field type wrapper:
+Step 3: on the publisher side, the SDK converts those Go values to the schema types and encodes the whole message as CBOR. The message has three top-level fields: `source` (the publishing node), `timestamp` (the moment of publication, in RFC3339 with millisecond precision, taken from the container's clock — so it carries the local UTC offset, not necessarily `Z`), and `data` (your published fields). Shown here in CBOR diagnostic notation, the human-readable rendering of CBOR — each field carries its native value, with no per-field type wrapper:
 
 ```text
 {
   "source": "publisher-node",
-  "timestamp": "2026-03-22T18:30:00+08:00",
+  "timestamp": "2026-03-22T18:30:00.123+08:00",
   "data": {
     "temperature": 25.5,
     "running": true,
@@ -787,7 +787,7 @@ Step 4: when a downstream node receives that payload on its own `input1`, the ha
 
 ```go
 msg := <-ctx.Messages()
-// msg.Handle == "input1", msg.Source == "publisher-node", msg.Timestamp == "2026-03-22T18:30:00+08:00"
+// msg.Handle == "input1", msg.Source == "publisher-node", msg.Timestamp == "2026-03-22T18:30:00.123+08:00"
 
 data := msg.ToMap()
 // data == map[string]any{
@@ -988,7 +988,11 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Most recent releases first.
 
-### v2.1.0 — unreleased
+### v2.2.0 — 2026-08-13
+
+- **Millisecond message timestamps.** The envelope `timestamp` is RFC3339 with a fixed three-digit fraction (`2026-03-22T10:30:00.123Z`) instead of whole seconds, so samples taken within the same second are no longer written as the same time. The field remains a CBOR text string and the `time.RFC3339` layout parses both forms, so a node still publishing second-precision stamps interoperates in both directions. Consumers that validate the stamp against a fixed-length pattern, or parse it with a layout that forbids a fraction, must be updated.
+
+### v2.1.0 — 2026-08-03
 
 **BREAKING message-format change.** NeoFlow data messages now travel as CBOR instead of JSON, and field values are carried as native CBOR values instead of stringified `type`/`value` pairs. Apps built with earlier SDK versions cannot exchange NeoFlow messages with v2.1.0 apps; rebuild against this version.
 

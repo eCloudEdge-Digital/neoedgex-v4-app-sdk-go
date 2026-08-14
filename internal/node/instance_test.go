@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -179,6 +180,168 @@ func TestPublishSendsCBOREnvelopeWithSchemaTypedValues(t *testing.T) {
 	}
 	if value != "7" {
 		t.Fatalf("unexpected value: %q", value)
+	}
+}
+
+// millisecondTimestamp matches RFC3339 with exactly three fractional digits:
+// the shape a fixed-width layout guarantees even when the clock lands on a
+// whole second.
+var millisecondTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2})$`)
+
+// secondsOf returns the whole-second prefix of an RFC3339 timestamp, the part
+// two stamps share when only their fraction differs.
+func secondsOf(timestamp string) string {
+	const secondPrecisionWidth = len("2006-01-02T15:04:05")
+	if len(timestamp) < secondPrecisionWidth {
+		return timestamp
+	}
+	return timestamp[:secondPrecisionWidth]
+}
+
+// timestampPublisher returns an instance with one trivial output handle plus a
+// publish func that returns the timestamp of the envelope it just put on the
+// wire.
+func timestampPublisher(t *testing.T) func(*testing.T) string {
+	t.Helper()
+	instance, messenger := newTestInstance(t, contract.NodeData{
+		Name: "demo-node",
+		Outputs: map[string][]contract.PortFieldSchema{
+			"output1": {{Key: "value", Type: contract.TypeInt64}},
+		},
+	})
+	return func(t *testing.T) string {
+		t.Helper()
+		if err := instance.Publish("output1", map[string]any{"value": int64(1)}); err != nil {
+			t.Fatalf("expected Publish to succeed, got: %v", err)
+		}
+		message, _ := decodeWire(t, messenger.last(t).data)
+		return message.Timestamp
+	}
+}
+
+// The layout is asserted directly, because the clock-driven tests below cannot
+// choose which instant they observe: the whole-second case is where
+// time.RFC3339Nano would silently drop the fraction and hand consumers a
+// variable-width string.
+func TestPublishTimestampLayoutKeepsFixedWidthFraction(t *testing.T) {
+	zone := time.FixedZone("CST", 8*3600)
+	for _, testCase := range []struct {
+		name string
+		when time.Time
+		want string
+	}{
+		{"whole second still carries a fraction", time.Date(2026, 3, 22, 18, 30, 0, 0, zone), "2026-03-22T18:30:00.000+08:00"},
+		{"millisecond", time.Date(2026, 3, 22, 18, 30, 0, 123000000, zone), "2026-03-22T18:30:00.123+08:00"},
+		{"leading zeros in the fraction are kept", time.Date(2026, 3, 22, 10, 30, 0, 5000000, time.UTC), "2026-03-22T10:30:00.005Z"},
+		{"sub-millisecond truncates, never rounds up", time.Date(2026, 3, 22, 18, 30, 0, 999999999, zone), "2026-03-22T18:30:00.999+08:00"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := testCase.when.Format(publishTimestampLayout)
+			if got != testCase.want {
+				t.Fatalf("Format(publishTimestampLayout) = %q, want %q", got, testCase.want)
+			}
+			if !millisecondTimestamp.MatchString(got) {
+				t.Fatalf("timestamp %q is not RFC3339 with a three-digit fraction", got)
+			}
+		})
+	}
+}
+
+func TestPublishTimestampHasMillisecondPrecision(t *testing.T) {
+	publish := timestampPublisher(t)
+
+	before := time.Now()
+	timestamp := publish(t)
+	after := time.Now()
+
+	if !millisecondTimestamp.MatchString(timestamp) {
+		t.Fatalf("published timestamp %q is not RFC3339 with a three-digit fraction", timestamp)
+	}
+
+	// A hardcoded ".000" would satisfy the shape check, so the stamp is also
+	// pinned to the wall clock it claims to record. The lower bound is
+	// truncated because the layout truncates.
+	published, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		t.Fatalf("published timestamp %q does not parse as RFC3339: %v", timestamp, err)
+	}
+	if published.Before(before.Truncate(time.Millisecond)) || published.After(after) {
+		t.Fatalf("published timestamp %q is outside the publish window [%s, %s]",
+			timestamp, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
+}
+
+// The regression test for NEO-7263 itself: tags are polled on millisecond
+// intervals, so two publishes inside the same second must not collapse onto one
+// timestamp, which is exactly what the previous second-precision format did.
+func TestPublishSeparatesMessagesWithinTheSameSecond(t *testing.T) {
+	publish := timestampPublisher(t)
+
+	// The pair is retried so the assertion always lands on two publishes that
+	// share a second — a pair straddling a second boundary would differ even
+	// under the old format and prove nothing.
+	var first, second string
+	for attempt := 0; attempt < 5; attempt++ {
+		first = publish(t)
+		time.Sleep(2 * time.Millisecond) // guarantees the millisecond advances
+		second = publish(t)
+		if secondsOf(first) == secondsOf(second) {
+			break
+		}
+	}
+
+	if secondsOf(first) != secondsOf(second) {
+		t.Fatalf("could not observe two publishes within one second: %q and %q", first, second)
+	}
+	if first == second {
+		t.Fatalf("two publishes 2ms apart share the timestamp %q; sub-second precision was lost", first)
+	}
+}
+
+// Interop with consumers built against the second-precision format: they decode
+// `timestamp` into a string field, so the CBOR major type must not change and
+// the value must stay parseable by the plain time.RFC3339 layout. Only the
+// string's content gains a fraction.
+func TestPublishKeepsTimestampWireCompatible(t *testing.T) {
+	instance, messenger := newTestInstance(t, contract.NodeData{
+		Name: "demo-node",
+		Outputs: map[string][]contract.PortFieldSchema{
+			"output1": {{Key: "value", Type: contract.TypeInt64}},
+		},
+	})
+	if err := instance.Publish("output1", map[string]any{"value": int64(1)}); err != nil {
+		t.Fatalf("expected Publish to succeed, got: %v", err)
+	}
+	payload := messenger.last(t).data
+
+	var envelope map[string]cbor.RawMessage
+	if err := cbor.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("published payload is not a CBOR map: %v", err)
+	}
+	raw, present := envelope["timestamp"]
+	if !present || len(raw) == 0 {
+		t.Fatal("published envelope carries no timestamp")
+	}
+	const cborTextStringMajor = 3
+	if raw[0]>>5 != cborTextStringMajor {
+		t.Fatalf("timestamp is CBOR major type %d, want %d (text string): a type change breaks every existing consumer",
+			raw[0]>>5, cborTextStringMajor)
+	}
+
+	// Decoding the way a consumer built before this change does.
+	var legacy struct {
+		SourceNodeID string          `cbor:"source"`
+		Timestamp    string          `cbor:"timestamp"`
+		Data         cbor.RawMessage `cbor:"data"`
+	}
+	if err := cbor.Unmarshal(payload, &legacy); err != nil {
+		t.Fatalf("a second-precision consumer cannot decode the envelope: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, legacy.Timestamp); err != nil {
+		t.Fatalf("timestamp %q does not parse with the plain RFC3339 layout: %v", legacy.Timestamp, err)
+	}
+	if legacy.SourceNodeID != "node-1" || len(legacy.Data) == 0 {
+		t.Fatalf("envelope decoded incompletely: %+v", legacy)
 	}
 }
 
@@ -654,6 +817,50 @@ func TestRunLoopDeliversSchemaTypedMessage(t *testing.T) {
 	decoded := message.ToMap()
 	if got, ok := decoded["value"].(int64); !ok || got != 42 {
 		t.Fatalf("unexpected field value: %#v (%T)", decoded["value"], decoded["value"])
+	}
+}
+
+// The receiving half of the interop guarantee: the SDK never parses an inbound
+// timestamp, it hands the string to the handler untouched. So a publisher on
+// either format — and one with a precision neither format uses — is delivered
+// verbatim rather than normalized or rejected.
+func TestRunLoopPassesInboundTimestampThroughVerbatim(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		timestamp string
+	}{
+		{"second precision from an older publisher", "2026-03-31T09:10:11Z"},
+		{"millisecond precision", "2026-03-31T09:10:11.123+08:00"},
+		{"nanosecond precision from a non-SDK publisher", "2026-03-31T09:10:11.123456789Z"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			instance, subscriber, _ := runLoopInstance(t, map[string][]contract.PortFieldSchema{
+				"input1": {{Key: "value", Type: contract.TypeInt64}},
+			})
+
+			dataBytes, err := cbor.Marshal(map[string]any{"value": 42})
+			if err != nil {
+				t.Fatalf("unexpected marshal error: %v", err)
+			}
+			payload, err := cbor.Marshal(contract.NeoFlowMessage{
+				SourceNodeID: "source-node",
+				Timestamp:    testCase.timestamp,
+				Data:         dataBytes,
+			})
+			if err != nil {
+				t.Fatalf("unexpected marshal error: %v", err)
+			}
+
+			subscriber <- core.RawMessengerPayload{Handle: "input1", Data: payload}
+
+			message := receiveMessage(t, instance)
+			if message.Timestamp != testCase.timestamp {
+				t.Fatalf("inbound timestamp altered: got %q, want %q", message.Timestamp, testCase.timestamp)
+			}
+			if got, ok := message.ToMap()["value"].(int64); !ok || got != 42 {
+				t.Fatalf("data was not delivered alongside the timestamp: %#v", message.ToMap()["value"])
+			}
+		})
 	}
 }
 

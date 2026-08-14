@@ -13,6 +13,18 @@ import (
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/contract"
 )
 
+// publishTimestampLayout is RFC3339 with a fixed three-digit fraction. Tags are
+// polled on millisecond intervals, so a second-precision stamp collapses every
+// sample taken within the same second into one indistinguishable time.
+//
+// The fraction is fixed-width on purpose: time.RFC3339Nano trims trailing
+// zeros and drops the fraction entirely on a whole second, which would hand
+// consumers a variable-length string. Fixed width also keeps the format
+// backward compatible in both directions — a parser reading time.RFC3339
+// accepts the fraction, and a second-precision stamp from an older publisher
+// still parses here.
+const publishTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
 type Instance struct {
 	sdk core.SDK
 	// logger carries SDK machinery output and is silenced by App.DisableSDKLog;
@@ -204,7 +216,7 @@ func (instance *Instance) Publish(handle string, data map[string]any) error {
 
 	message := contract.NeoFlowMessage{
 		SourceNodeID: instance.nodeConfig.ID,
-		Timestamp:    time.Now().Format(time.RFC3339),
+		Timestamp:    time.Now().Format(publishTimestampLayout),
 		Data:         dataBytes,
 	}
 

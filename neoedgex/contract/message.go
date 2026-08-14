@@ -39,8 +39,12 @@ type RawMessage cbor.RawMessage
 type Message struct {
 	// Source is the publishing node's ID.
 	Source string
-	// Timestamp is the publish time in RFC3339 form. Mock-injected messages
-	// carry none, so it is empty there.
+	// Timestamp is the publish time in RFC3339 form, delivered exactly as the
+	// upstream node wrote it. A node on this SDK version stamps it to
+	// millisecond precision ("2026-03-22T18:30:00.123+08:00"); one on an older
+	// version stamps whole seconds and carries no fraction, so parse with the
+	// time.RFC3339 layout, which accepts both. Mock-injected messages carry no
+	// time, so it is empty there.
 	Timestamp string
 	// Handle is the input port the message arrived on. It selects the input
 	// schema the accessors decode Data with.
