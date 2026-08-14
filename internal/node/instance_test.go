@@ -381,6 +381,147 @@ func TestPublishKeepsTimestampWireCompatible(t *testing.T) {
 	}
 }
 
+// publishThenReceive walks a value through the REAL publish path and back in
+// through the REAL receive path: an upstream node whose output schema declares
+// upstream publishes value, and a downstream node whose input schema declares
+// downstream reads the resulting wire bytes. It returns what the downstream
+// handler sees.
+//
+// Testing the two sides separately cannot catch a pairing bug, because the
+// string form of a float is produced by whichever side owns the conversion —
+// the publisher when its output schema says string, the receiver when the wire
+// carries a native float into a string-declared input.
+func publishThenReceive(t *testing.T, upstream contract.DataType, value any, downstream contract.DataType) any {
+	t.Helper()
+	instance, messenger := newTestInstance(t, contract.NodeData{
+		Name:    "upstream-node",
+		Outputs: map[string][]contract.PortFieldSchema{"output1": {{Key: "v", Type: upstream}}},
+	})
+	if err := instance.Publish("output1", map[string]any{"v": value}); err != nil {
+		t.Fatalf("publish %v as %s: %v", value, upstream, err)
+	}
+	envelope, _ := decodeWire(t, messenger.last(t).data)
+	return receiveWireValue(t, envelope.Data, downstream)
+}
+
+// receiveWireValue decodes one already-encoded data map through the receive
+// path of a node whose input schema declares the key as downstream.
+func receiveWireValue(t *testing.T, dataMap []byte, downstream contract.DataType) any {
+	t.Helper()
+	plan := contract.NewDecodePlan([]contract.PortFieldSchema{{Key: "v", Type: downstream}})
+	msg := contract.NewMessage("upstream-node", "", "input1", contract.RawMessage(dataMap), plan, testLogger{})
+	return msg.ToMap()["v"]
+}
+
+// TestPublishToReceiveAcrossSchemaPairings pins what a downstream node actually
+// reads for each pairing of upstream output type and downstream input type.
+// The canonical float string form is only observable end to end: a float
+// published through a string-declared tag becomes text, and that text is what
+// the next node parses.
+func TestPublishToReceiveAcrossSchemaPairings(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		upstream   contract.DataType
+		value      any
+		downstream contract.DataType
+		want       any
+	}{
+		{"float through a string tag, read as string", contract.TypeString, 25.34, contract.TypeString, "25.34"},
+		{"float through a string tag, read as double", contract.TypeString, 25.34, contract.TypeDouble, float64(25.34)},
+		{"float through a double tag, read as string", contract.TypeDouble, 25.34, contract.TypeString, "25.34"},
+		// A single-precision wire value keeps its 32-bit identity all the way
+		// to the string, so it reads as the value the sender meant rather than
+		// the widening artefact "25.34000015258789".
+		{"single-precision through a float tag, read as string", contract.TypeFloat, float32(25.34), contract.TypeString, "25.34"},
+		{"float through a double tag, read as double", contract.TypeDouble, 25.34, contract.TypeDouble, float64(25.34)},
+		// The one semantic consequence of the fixed-point form: an
+		// integer-valued float crossing a string tag is now a legal integer
+		// literal downstream. The scientific form was not, and arrived
+		// undefined — see TestReceiveAcceptsPreCanonicalWireText.
+		{"integer-valued float through a string tag, read as string", contract.TypeString, float64(500), contract.TypeString, "500"},
+		{"integer-valued float through a string tag, read as int16", contract.TypeString, float64(500), contract.TypeInt16, int16(500)},
+		{"integer-valued float through a string tag, read as int64", contract.TypeString, float64(500), contract.TypeInt64, int64(500)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := publishThenReceive(t, testCase.upstream, testCase.value, testCase.downstream)
+			if fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", testCase.want) {
+				t.Fatalf("downstream read %#v, want %#v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestRelayKeepsFloatWidthAcrossHops follows a value through two hops, where
+// the middle node reads it and republishes it under the SAME declaration
+// rather than converting to a string itself. A float-declared tag re-emits
+// single precision on every hop, so without the head-byte check the widening
+// artefact would ride the whole chain and only surface at the node that
+// finally declares the tag a string — arbitrarily far from the publisher that
+// chose the type.
+func TestRelayKeepsFloatWidthAcrossHops(t *testing.T) {
+	for _, relayed := range []contract.DataType{contract.TypeFloat, contract.TypeDouble} {
+		t.Run("relayed as "+string(relayed), func(t *testing.T) {
+			// Hop 1: the origin publishes into the relayed declaration.
+			origin, originMessenger := newTestInstance(t, contract.NodeData{
+				Name:    "origin-node",
+				Outputs: map[string][]contract.PortFieldSchema{"output1": {{Key: "v", Type: relayed}}},
+			})
+			if err := origin.Publish("output1", map[string]any{"v": float32(25.34)}); err != nil {
+				t.Fatalf("origin publish: %v", err)
+			}
+			firstHop, _ := decodeWire(t, originMessenger.last(t).data)
+
+			// Hop 2: the middle node reads it and passes it on untouched.
+			relayedValue := receiveWireValue(t, firstHop.Data, relayed)
+			middle, middleMessenger := newTestInstance(t, contract.NodeData{
+				Name:    "middle-node",
+				Outputs: map[string][]contract.PortFieldSchema{"output1": {{Key: "v", Type: relayed}}},
+			})
+			if err := middle.Publish("output1", map[string]any{"v": relayedValue}); err != nil {
+				t.Fatalf("middle publish: %v", err)
+			}
+			secondHop, _ := decodeWire(t, middleMessenger.last(t).data)
+
+			// The far end declares it a string.
+			if got := receiveWireValue(t, secondHop.Data, contract.TypeString); got != "25.34" {
+				t.Fatalf("after relaying as %s, the string end read %#v, want %q", relayed, got, "25.34")
+			}
+		})
+	}
+}
+
+// TestReceiveAcceptsPreCanonicalWireText is the compatibility half: an upstream
+// node still on a pre-v2.2.0 SDK stringifies floats in scientific notation, and
+// this SDK must keep reading those messages. The wire text is hand-built
+// because the current publish path can no longer produce it.
+func TestReceiveAcceptsPreCanonicalWireText(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		wire       string
+		downstream contract.DataType
+		want       any
+	}{
+		{"scientific into a string tag is delivered verbatim", "2.534e+01", contract.TypeString, "2.534e+01"},
+		{"scientific into a double tag parses", "2.534e+01", contract.TypeDouble, float64(25.34)},
+		{"scientific into a float tag parses", "1.5e+00", contract.TypeFloat, float32(1.5)},
+		// Not an integer literal, so it stays undefined: the shape whose
+		// downstream conversion error the fixed-point form resolves.
+		{"scientific integer into an int16 tag stays undefined", "5e+02", contract.TypeInt16, nil},
+		{"fixed-point integer into an int16 tag parses", "500", contract.TypeInt16, int16(500)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dataMap, err := cbor.Marshal(map[string]any{"v": testCase.wire})
+			if err != nil {
+				t.Fatalf("unexpected marshal error: %v", err)
+			}
+			got := receiveWireValue(t, dataMap, testCase.downstream)
+			if fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", testCase.want) {
+				t.Fatalf("downstream read %#v, want %#v", got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestPublishUnknownHandleFails(t *testing.T) {
 	instance, _ := newTestInstance(t, contract.NodeData{Name: "demo-node"})
 	if err := instance.Publish("nope", map[string]any{"v": 1}); err == nil {

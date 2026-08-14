@@ -242,6 +242,53 @@ func TestMessageToMapSchemaTypedAllScalars(t *testing.T) {
 
 // TestMessageToMapIntegerPrecisionGuard pins that int64/uint64 extremes are
 // never widened through float64: no 9.22e+18 / 1.84e+19 corruption.
+// TestSinglePrecisionWireValueKeepsItsWidthIntoAStringTag pins that a 0xfa
+// wire value reaching a string-declared tag reads as the value the sender
+// meant rather than the artefact of widening it to double first ("25.34", not
+// "25.34000015258789"). Both decimals recover the same wire bits; only the
+// 32-bit one is what the publisher chose. The Python SDK pins the identical
+// table.
+func TestSinglePrecisionWireValueKeepsItsWidthIntoAStringTag(t *testing.T) {
+	for _, testCase := range []struct {
+		value float32
+		want  string
+	}{
+		{25.34, "25.34"},
+		{500, "500"},
+		{0.1, "0.1"},
+		{-2.5, "-2.5"},
+		{3.4028235e38, "340282350000000000000000000000000000000"},
+	} {
+		data := mustCBOR(t, map[string]any{"v": testCase.value})
+		plan := NewDecodePlan([]PortFieldSchema{{Key: "v", Type: TypeString}})
+		got := NewMessage("up", "", "in", RawMessage(data), plan, nil).ToMap()["v"]
+		if got != testCase.want {
+			t.Fatalf("float32(%v) into a string tag: got %#v, want %q", testCase.value, got, testCase.want)
+		}
+	}
+}
+
+// TestDoublePrecisionWireValueIntoAStringTagIsUnaffected is the companion: a
+// 0xfb value has no narrower identity to preserve, so it stringifies from the
+// double, and a widened float32 spelled as a genuine double keeps every digit
+// because that IS the value chosen at 64-bit width.
+func TestDoublePrecisionWireValueIntoAStringTagIsUnaffected(t *testing.T) {
+	for _, testCase := range []struct {
+		value float64
+		want  string
+	}{
+		{25.34, "25.34"},
+		{25.340000152587890625, "25.34000015258789"},
+	} {
+		data := mustCBOR(t, map[string]any{"v": testCase.value})
+		plan := NewDecodePlan([]PortFieldSchema{{Key: "v", Type: TypeString}})
+		got := NewMessage("up", "", "in", RawMessage(data), plan, nil).ToMap()["v"]
+		if got != testCase.want {
+			t.Fatalf("float64(%v) into a string tag: got %#v, want %q", testCase.value, got, testCase.want)
+		}
+	}
+}
+
 func TestMessageToMapIntegerPrecisionGuard(t *testing.T) {
 	msg := newTestMessage(t, map[string]any{
 		"imax": int64(math.MaxInt64),

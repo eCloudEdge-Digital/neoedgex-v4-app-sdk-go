@@ -445,10 +445,18 @@ const (
 // without error, which would skip the matrix and lose the shortest-decimal
 // restore (float32(25.34) must surface as float64 25.34, not
 // 25.34000015258789).
+//
+// The same applies to a single-precision value reaching a string tag. The
+// widening is exact, so nothing is lost numerically, but the shortest decimal
+// that round-trips a float64 needs every digit of the widened value
+// ("25.34000015258789") while the shortest decimal that round-trips the
+// float32 it actually came from is "25.34" — both recover the wire bits, and
+// only the second is the value the sender meant. Reading the head byte keeps
+// the width, which is otherwise erased by the natural-domain decode.
 func decodeFieldWithSchema(raw cbor.RawMessage, tagType DataType) (any, error) {
 	if len(raw) > 0 {
 		switch {
-		case raw[0] == cborSingleFloatHead && tagType == TypeDouble:
+		case raw[0] == cborSingleFloatHead && (tagType == TypeDouble || tagType == TypeString):
 			var v float32
 			if err := decMode.Unmarshal(raw, &v); err != nil {
 				return nil, err
