@@ -53,7 +53,7 @@ type MockMessage struct {
 	// Handle is the input port to deliver the message on.
 	Handle string `json:"handle"`
 	// Data holds each field in stringified type/value form rather than as a
-	// native JSON value, for example {"type":"double","value":"2.534e+01"}.
+	// native JSON value, for example {"type":"double","value":"25.34"}.
 	// The SDK converts each entry to its native Go value at injection time, so
 	// the handler sees what it would see in production.
 	Data map[string]contract.PortFieldData `json:"data"`

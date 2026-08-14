@@ -20,7 +20,7 @@ func TestNewPortFieldDataWithStringKeepsValueVerbatim(t *testing.T) {
 		dataType DataType
 	}{
 		{"007", TypeInt64},                   // leading zeros kept
-		{"25.50", TypeDouble},                // trailing zero kept (not "2.55e+01")
+		{"25.50", TypeDouble},                // trailing zero kept (not "25.5")
 		{"9223372036854775807", TypeInt64},   // int64 max stays exact text
 		{"18446744073709551615", TypeUint64}, // uint64 max stays exact text
 		{"true", TypeBool},                   //
@@ -149,8 +149,8 @@ func TestNewPortFieldDataWithAnyStringifiesNativeValues(t *testing.T) {
 	}{
 		{int64(math.MaxInt64), TypeInt64, "9223372036854775807"},
 		{uint64(math.MaxUint64), TypeUint64, "18446744073709551615"},
-		{float64(25.5), TypeDouble, "2.55e+01"},
-		{float32(1.5), TypeFloat, "1.5e+00"},
+		{float64(25.5), TypeDouble, "25.5"},
+		{float32(1.5), TypeFloat, "1.5"},
 		{true, TypeBool, "true"},
 		{"text", TypeString, "text"},
 		{[]byte{0x00, 0x01, 0x02, 0x00, 0xff}, TypeRaw, "AAECAP8="},
@@ -170,6 +170,62 @@ func TestNewPortFieldDataWithAnyStringifiesNativeValues(t *testing.T) {
 
 // TestNewEmptyFieldIsUndefined pins the undefined marker the mock injection
 // path turns into a CBOR null.
+// TestConvertAnyValueFloatsAreFixedPointDecimal pins the canonical float
+// string form: strconv's 'f' verb at shortest round-trip precision, the same
+// rendering the platform's formula engine and forwarder payloads use. The
+// notation never switches to an exponent, an integer-valued float carries no
+// ".0", and negative zero keeps its sign. The Python SDK pins the identical
+// table, so the two SDKs cannot drift apart.
+func TestConvertAnyValueFloatsAreFixedPointDecimal(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{float64(25.34), "25.34"},
+		{float64(500), "500"},
+		{float64(0), "0"},
+		{math.Copysign(0, -1), "-0"},
+		{float64(0.000123), "0.000123"},
+		{float64(1e-7), "0.0000001"},
+		{float64(1e21), "1000000000000000000000"},
+		{float64(-2.5), "-2.5"},
+		{float64(1234567), "1234567"},
+		// float32 formats at 32-bit shortest precision: the widened double of
+		// float32(25.34) is 25.340000152587891, but the string stays "25.34".
+		{float32(25.34), "25.34"},
+		{float32(500), "500"},
+	}
+	for _, tc := range cases {
+		s, _, err := ConvertAnyValue(tc.value)
+		if err != nil {
+			t.Fatalf("ConvertAnyValue(%v): unexpected error: %v", tc.value, err)
+		}
+		if s != tc.want {
+			t.Fatalf("ConvertAnyValue(%v) = %q, want %q", tc.value, s, tc.want)
+		}
+	}
+
+	// The parse side must keep accepting the OLD scientific form: a message
+	// stringified by a pre-v2.2.0 publisher still converts. Tightening this
+	// would break old-publisher-to-new-consumer traffic.
+	for _, tc := range []struct {
+		text     string
+		destType DataType
+		want     any
+	}{
+		{"2.534e+01", TypeDouble, float64(25.34)},
+		{"1.5e+00", TypeFloat, float32(1.5)},
+	} {
+		got, err := ConvertToTypedValue(tc.text, tc.destType)
+		if err != nil {
+			t.Fatalf("legacy form %q no longer parses: %v", tc.text, err)
+		}
+		if got != tc.want {
+			t.Fatalf("legacy form %q parsed to %#v, want %#v", tc.text, got, tc.want)
+		}
+	}
+}
+
 func TestNewEmptyFieldIsUndefined(t *testing.T) {
 	field := NewEmptyField()
 	if field.Type != TypeUndefined {

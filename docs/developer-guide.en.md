@@ -692,8 +692,8 @@ if err != nil {
     </tr>
     <tr>
       <td><code>float32</code>, <code>float64</code></td>
-      <td>Converted to scientific-notation strings.</td>
-      <td><code>25.5 -&gt; "2.55e+01"</code></td>
+      <td>Converted to fixed-point decimal strings, using the shortest decimal that restores the same value; integer-valued floats carry no <code>.0</code> and the notation never switches to an exponent.</td>
+      <td><code>25.5 -&gt; "25.5"</code></td>
     </tr>
     <tr>
       <td><code>bool</code></td>
@@ -864,7 +864,7 @@ Minimal mock config shape:
         "data": {
           "temperature": {
             "type": "double",
-            "value": "2.55e+01"
+            "value": "25.5"
           }
         }
       }
@@ -878,7 +878,7 @@ What that file has to get right:
 - `mock.messages[].nodeID` must be exactly one of the `nodes[].id` values, and `handle` should be one the same node declares under `inputs`. A `nodeID` that matches no node delivers nothing at all — the only sign is a `[MOCK INJECT] error: no subscriber for node ...` warning in the log. A `handle` the node does not declare still delivers, but with no input schema behind it, so every value arrives untyped.
 - messages are injected one per tick, cycling through the list from the top and starting about half a second after the app comes up. To exercise several inputs, list one message per input and let them rotate.
 - `messageInterval` is a Go duration string such as `"3s"` or `"500ms"`. Missing, unparseable, or not positive falls back to 3s, with no error.
-- injected values keep the stringified `type`/`value` form: floats in scientific notation (`"2.55e+01"`), `raw` as base64, bool as `"true"` / `"false"`. The SDK converts each entry to its native Go value at injection time, so the handler sees the same decoded values as in production. An entry with an empty `type` injects an undefined field, which is how you exercise the `nil` path.
+- injected values keep the stringified `type`/`value` form: floats as fixed-point decimal strings (`"25.5"`; scientific notation such as `"2.55e+01"` also parses), `raw` as base64, bool as `"true"` / `"false"`. The SDK converts each entry to its native Go value at injection time, so the handler sees the same decoded values as in production. An entry with an empty `type` injects an undefined field, which is how you exercise the `nil` path.
 - every injected message arrives with `Source` `"mock"` and a `Timestamp` taken from the local clock at injection time, in the same UTC millisecond form a real publisher writes.
 - there is no broker, so what your handler publishes is visible only in the log, as `[MOCK PUBLISH]` lines carrying the topic and the decoded payload. Heartbeats appear the same way, with an empty payload. `DisableSDKLog()` hides all of it.
 
@@ -991,8 +991,11 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 
 ### v2.2.0 — 2026-08-13
 
+**This release changes the exact text of two values in a data message, without changing any type.** The envelope `timestamp` gains millisecond precision and is written in UTC. A float value rendered into a `string`-declared tag is written in fixed-point decimal instead of scientific notation. Both remain CBOR text strings, every parser that accepted the old form accepts the new one, and nodes on either version exchange messages in both directions. Consumers that compare these strings exactly, validate them against a fixed-length pattern, or forward them verbatim to an external system should be reviewed against the entries below.
+
 - **Millisecond message timestamps.** The envelope `timestamp` is RFC3339 with a fixed three-digit fraction (`2026-03-22T10:30:00.123Z`) instead of whole seconds, so samples taken within the same second are no longer written as the same time. The field remains a CBOR text string and the `time.RFC3339` layout parses both forms, so a node still publishing second-precision stamps interoperates in both directions. Consumers that validate the stamp against a fixed-length pattern, or parse it with a layout that forbids a fraction, must be updated.
 - **Publish timestamps are always UTC.** The envelope `timestamp` is formatted from the clock converted to UTC and therefore always ends in `Z`, instead of carrying the container's local offset. Receiving is unchanged: an inbound timestamp is delivered to the handler verbatim and never validated, whatever zone or precision it carries. Mock mode and `testutil` follow the publish form — a mock-injected message carries a UTC millisecond stamp instead of an empty string, and `testutil`'s default message timestamp is now `"2026-01-01T00:00:00.000Z"` rather than `"2026-01-01T00:00:00Z"`. Consumers that assume a local offset, and tests that compare either literal exactly, must be updated.
+- **Fixed-point decimal float strings.** A float value converted to a `string`-declared tag, on publish and on receive alike, is rendered in fixed-point decimal, using the shortest decimal that restores the same value: `25.34` becomes `"25.34"` rather than `"2.534e+01"`, an integer-valued float carries no `.0` (`500.0` becomes `"500"`), and the notation does not switch to an exponent at any magnitude. This is the rendering the platform's formula engine and forwarder payloads already produce. The parse side is unchanged and accepts both forms, so nodes on either version interoperate and mock configuration files holding scientific-notation values continue to load. One consequence: an integer-valued float sent through a string tag now parses into a downstream tag declared as an integer type, where the scientific form was rejected as undefined, so a pipeline that reported a conversion error for that combination now delivers the value. Consumers that match the scientific form must be updated.
 - **Added `contract.PublishTimestampLayout`.** The publish-side timestamp layout (`2006-01-02T15:04:05.000Z07:00`) is exported, so a component that builds a NeoFlow envelope outside this SDK can format with the same constant instead of copying the literal. It describes the publish side only; inbound timestamps are never validated against it.
 
 ### v2.1.0 — 2026-08-03

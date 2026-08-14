@@ -118,7 +118,7 @@ func TestConvertToTypedValueCrossTypeAllowed(t *testing.T) {
 		// number/bool -> string (stringification via ConvertAnyValue).
 		{"int64 -> string", int64(7), TypeString, "7"},
 		{"bool -> string", true, TypeString, "true"},
-		{"double -> string", float64(2.5), TypeString, "2.5e+00"},
+		{"double -> string", float64(2.5), TypeString, "2.5"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,8 +150,8 @@ func TestConvertToTypedValueFloatToDoubleShortestDecimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if dt != TypeDouble || s != "2.534e+01" {
-		t.Fatalf("display string drifted: got %q (%s), want %q (%s)", s, dt, "2.534e+01", TypeDouble)
+	if dt != TypeDouble || s != "25.34" {
+		t.Fatalf("display string drifted: got %q (%s), want %q (%s)", s, dt, "25.34", TypeDouble)
 	}
 }
 

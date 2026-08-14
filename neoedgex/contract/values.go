@@ -24,7 +24,7 @@ type PortFieldData struct {
 	// Type is the schema type Value is parsed as.
 	Type DataType `json:"type"`
 	// Value is the stringified value. NewPortFieldDataWithAny writes it in the
-	// form ConvertAnyValue produces (floats in scientific notation, raw as
+	// form ConvertAnyValue produces (floats in fixed-point decimal, raw as
 	// base64, bool as "true"/"false"); NewPortFieldDataWithString stores the
 	// caller's string verbatim, so "0025" stays "0025".
 	Value string `json:"value"`
@@ -135,11 +135,15 @@ func (v PortFieldData) ConvertTo(destType DataType) (*PortFieldData, error) {
 // ConvertAnyValue stringifies a native Go scalar value and reports the schema
 // type it was detected as.
 //
-// Floats are formatted in scientific notation at shortest round-trip
-// precision, so 25.34 becomes "2.534e+01", and []byte is base64-encoded.
-// Integers are plain decimal and bool becomes "true"/"false". A nil value, or
-// one whose Go type has no schema type (see GetDataType), returns an error
-// and TypeUndefined.
+// Floats are formatted in fixed-point decimal at shortest round-trip
+// precision — 25.34 becomes "25.34", an integer-valued float has no ".0"
+// (500.0 becomes "500"), and the notation never switches to an exponent, so
+// 1e21 spells out all 22 digits. This is the same rendering the platform's
+// formula engine and forwarder payloads use (strconv's 'f' verb), so a value
+// reads identically wherever it surfaces. []byte is base64-encoded, integers
+// are plain decimal and bool becomes "true"/"false". A nil value, or one
+// whose Go type has no schema type (see GetDataType), returns an error and
+// TypeUndefined.
 //
 // The reported type follows GetDataType, so every Go integer kind is accepted
 // and the narrow ones widen: int8 reports int16, uint8 reports uint16, and the
@@ -171,9 +175,9 @@ func ConvertAnyValue(anyValue any) (string, DataType, error) {
 	case uint64:
 		return strconv.FormatUint(value, 10), TypeUint64, nil
 	case float32:
-		return strconv.FormatFloat(float64(value), 'e', -1, 32), TypeFloat, nil
+		return strconv.FormatFloat(float64(value), 'f', -1, 32), TypeFloat, nil
 	case float64:
-		return strconv.FormatFloat(value, 'e', -1, 64), TypeDouble, nil
+		return strconv.FormatFloat(value, 'f', -1, 64), TypeDouble, nil
 	case string:
 		return value, TypeString, nil
 	case bool:

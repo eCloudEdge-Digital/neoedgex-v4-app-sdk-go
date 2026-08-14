@@ -690,8 +690,8 @@ if err != nil {
     </tr>
     <tr>
       <td><code>float32</code>、<code>float64</code></td>
-      <td>轉成 scientific notation 字串。</td>
-      <td><code>25.5 -&gt; "2.55e+01"</code></td>
+      <td>轉成定點十進位字串，取可還原回原值的最短位數；整數值不帶 <code>.0</code>，且永不切換成指數寫法。</td>
+      <td><code>25.5 -&gt; "25.5"</code></td>
     </tr>
     <tr>
       <td><code>bool</code></td>
@@ -862,7 +862,7 @@ func main() {
         "data": {
           "temperature": {
             "type": "double",
-            "value": "2.55e+01"
+            "value": "25.5"
           }
         }
       }
@@ -876,7 +876,7 @@ func main() {
 - `mock.messages[].nodeID` 必須與某個 `nodes[].id` 完全相同，`handle` 也應是同一個節點在 `inputs` 中宣告過的。`nodeID` 對不上任何節點時什麼都不會送達，唯一的線索是 log 裡的 `[MOCK INJECT] error: no subscriber for node ...` warning。節點未宣告的 `handle` 仍會送達，但背後沒有 input schema，所有值都不帶型別。
 - 訊息每個 tick 注入一則，從清單頭開始輪替；app 啟動後約半秒開始。要同時測多個 input，就每個 input 各列一則訊息，讓它們輪流注入。
 - `messageInterval` 是 Go duration 字串，例如 `"3s"`、`"500ms"`。未填、無法解析或非正值時，一律退回 3s，且不報錯。
-- 注入的值維持字串化的 `type`/`value` 形式：浮點用科學記號（`"2.55e+01"`）、`raw` 用 base64、bool 用 `"true"` / `"false"`。SDK 在注入時把每筆值轉成原生 Go 值，handler 讀到的解碼結果與正式環境一致。`type` 留空的欄位會注入成 undefined，這就是測試 `nil` 路徑的方法。
+- 注入的值維持字串化的 `type`/`value` 形式：浮點用定點十進位字串（`"25.5"`；科學記號如 `"2.55e+01"` 亦可解析）、`raw` 用 base64、bool 用 `"true"` / `"false"`。SDK 在注入時把每筆值轉成原生 Go 值，handler 讀到的解碼結果與正式環境一致。`type` 留空的欄位會注入成 undefined，這就是測試 `nil` 路徑的方法。
 - 注入的訊息一律帶 `Source` `"mock"`，`Timestamp` 取自注入當下的本機時鐘，格式與真實 publisher 相同，是 UTC 毫秒形式。
 - 沒有真實 broker，因此 handler publish 的內容只看得到 log：`[MOCK PUBLISH]` 行會帶出 topic 與解碼後的 payload。heartbeat 也以同樣形式出現，payload 為空。呼叫 `DisableSDKLog()` 會把這些全部關掉。
 
@@ -989,8 +989,11 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 
 ### v2.2.0 — 2026-08-13
 
+**本版變更資料訊息裡兩個文字值的實際內容，但不改變任何型別。** 最外層 `timestamp` 提高到毫秒精度並改以 UTC 表示；寫入 `string` 宣告 tag 的浮點值改用定點十進位，不再使用科學記號。兩者仍為 CBOR text string，原本能解析舊形式的解析器同樣能解析新形式，新舊版本節點雙向皆可交換訊息。對這些字串做精確比對、以固定長度樣式驗證、或原樣轉發至外部系統的 consumer，請依以下各條檢視。
+
 - **訊息時間戳精度到毫秒。** 最外層 `timestamp` 由整秒改為 RFC3339 帶固定三位小數（`2026-03-22T10:30:00.123Z`），因此同一秒內採樣的資料不再被寫成相同時間。欄位仍為 CBOR text string，`time.RFC3339` layout 可解析兩種形式，故仍以秒精度發送的節點雙向皆可互通。以固定長度樣式驗證時間戳、或以不允許小數的 layout 解析的 consumer 必須調整。
 - **Publish 的時間戳一律為 UTC。** 最外層 `timestamp` 以轉換為 UTC 後的時鐘格式化，因此結尾一律為 `Z`，不再帶容器的本地時區偏移。接收端行為不變：收到的 timestamp 原封交給 handler 且從不驗證，無論其時區或精度。Mock 模式與 `testutil` 比照 publish 形式——mock 注入的訊息帶 UTC 毫秒時間戳，不再是空字串；`testutil` 的預設訊息時間戳由 `"2026-01-01T00:00:00Z"` 改為 `"2026-01-01T00:00:00.000Z"`。假設帶本地偏移的 consumer，以及對上述任一字面值做精確比對的測試，必須調整。
+- **浮點字串改為定點十進位。** 浮點值轉入 `string` 宣告的 tag 時，publish 與接收兩側皆轉成定點十進位、取可還原回原值的最短位數：`25.34` 為 `"25.34"` 而非 `"2.534e+01"`；整數值不帶 `.0`（`500.0` 為 `"500"`）；任何量級皆不切換為指數形式。此即平台 formula 引擎與 forwarder payload 既有的寫法。解析側不變、兩種形式皆接受，故新舊版本節點可互通，帶科學記號值的 mock 設定檔亦照常載入。一項行為影響：經由 string tag 傳遞的整數值浮點，現在可解析進下游宣告為整數型別的 tag，而科學記號形式會被拒為 undefined——原本因此組合回報轉換錯誤的管線，現在會交付該值。以科學記號形式做樣式比對的 consumer 必須調整。
 - **新增 `contract.PublishTimestampLayout`。** publish 端的時間戳 layout（`2006-01-02T15:04:05.000Z07:00`）改為公開，使在本 SDK 之外組出 NeoFlow envelope 的元件能以同一常數格式化，不必複製字面值。它僅描述 publish 端；收到的 timestamp 從不以此驗證。
 
 ### v2.1.0 — 2026-08-03
