@@ -43,7 +43,7 @@ func ExampleNewMessage() {
 	}
 
 	// Output:
-	// handle=input1 source=upstream-node timestamp=2026-01-01T00:00:00Z
+	// handle=input1 source=upstream-node timestamp=2026-01-01T00:00:00.000Z
 	// temperature: 25.5 (float64)
 	// ratio: 25.34 (float32)
 	// note: calibrated (string)

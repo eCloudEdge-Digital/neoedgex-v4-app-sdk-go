@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -158,11 +160,35 @@ func TestMockMessengerPublishLogsCBORPayloadHumanReadable(t *testing.T) {
 	}
 }
 
+// utcMillisecondTimestamp is the shape contract.PublishTimestampLayout renders a
+// UTC time in: RFC3339 with exactly three fractional digits and a "Z" zone. The
+// node package pins publish output against the same pattern; it is restated
+// rather than shared because declarations in a test file are not importable and
+// the alternative would be exporting a test-only symbol from the SDK.
+var utcMillisecondTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+
 // TestInjectNeoFlowMessageBuildsCBOREnvelopeWithNativeValues pins the mock
 // injection seam (deviation (g)): the mock config keeps PortFieldData JSON
 // form, but the injected wire message is a CBOR envelope whose data map holds
-// NATIVE values (double -> float64, raw -> []byte, undefined -> null).
+// NATIVE values (double -> float64, raw -> []byte, undefined -> null) and whose
+// timestamp is stamped the same way a real publish stamps it.
 func TestInjectNeoFlowMessageBuildsCBOREnvelopeWithNativeValues(t *testing.T) {
+	// Mock injection owes the handler the publish-side timestamp contract, so
+	// the local zone is moved off UTC for the test: an unforced stamp then reads
+	// "+08:00" and only the production .UTC() conversion can satisfy the "Z"
+	// asserted below. On a host that is already UTC — a CI container with TZ
+	// unset — the assertion would hold either way and pin nothing.
+	// t.Setenv("TZ", ...) cannot do this: time.Local is resolved once per
+	// process and cached, while time.Now() reads time.Local on every call. The
+	// write is global and therefore sound only while this package's tests stay
+	// sequential; no test here calls t.Parallel().
+	originalLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*3600)
+	defer func() { time.Local = originalLocal }()
+	if unforced := time.Now().Format(contract.PublishTimestampLayout); !strings.HasSuffix(unforced, "+08:00") {
+		t.Fatalf("local zone override did not take effect: an unforced stamp reads %q, want a +08:00 offset", unforced)
+	}
+
 	m := newMockMessenger(noopLogger{})
 	ch := m.AddSubscriber("n1")
 
@@ -192,6 +218,16 @@ func TestInjectNeoFlowMessageBuildsCBOREnvelopeWithNativeValues(t *testing.T) {
 	}
 	if env.SourceNodeID != "mock" {
 		t.Fatalf("unexpected source: %q", env.SourceNodeID)
+	}
+
+	// An injected message used to go out with an empty timestamp, which made
+	// mock traffic the one case where a handler reading msg.Timestamp saw
+	// something it can never see in production.
+	if env.Timestamp == "" {
+		t.Fatal("injected envelope carries no timestamp")
+	}
+	if !utcMillisecondTimestamp.MatchString(env.Timestamp) {
+		t.Fatalf("injected timestamp %q is not UTC RFC3339 with a three-digit fraction, the shape publish output has", env.Timestamp)
 	}
 
 	var fields map[string]cbor.RawMessage

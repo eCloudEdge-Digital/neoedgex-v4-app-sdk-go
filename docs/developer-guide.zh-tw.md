@@ -18,7 +18,7 @@ NeoEdgeX App SDK v4 是用來開發 NeoEdgeX 節點應用程式的 Go SDK，支�
 第三方應用程式只應依賴以下公開套件：
 
 - `neoedgex`：app 進入點、handler 介面，以及 handler 會用到的型別
-- `neoedgex/contract`：schema 型別，即 `DataType` 與其 `Type*` 常數、`PortFieldSchema`、`NodeData`
+- `neoedgex/contract`：schema 型別，即 `DataType` 與其 `Type*` 常數、`PortFieldSchema`、`NodeData`；以及 publisher 必須照著產出的格式，目前是 `PublishTimestampLayout`
 - `neoedgex/mock`：本地 mock 執行用的設定格式
 - `neoedgex/testutil`：`NodeEnv` 測試替身與訊息建構器，供單元測試使用；正式 app entrypoint 不需要 import
 
@@ -39,6 +39,7 @@ NeoEdgeX App SDK v4 是用來開發 NeoEdgeX 節點應用程式的 Go SDK，支�
 - `neoedgex.ErrorCode`
 - `contract.DataType` 與 `Type*` 常數
 - `contract.PortFieldSchema`、`contract.NodeData`
+- `contract.PublishTimestampLayout`
 - `mock.LoadConfig(...)`
 - `testutil.MockNodeEnv`，含 `NewMessage(...)` 與 `Deliver(...)`
 - `testutil.NewMessage(...)`、`testutil.Fields`、`testutil.Field`、`testutil.Undeclared`
@@ -349,7 +350,7 @@ NeoFlow 節點之間透過 MQTT 互相傳訊息：一則資料訊息就是一個
 - `Handle`：觸發此訊息的 input handle 名稱
 - `Data`：`RawMessage`，原樣持有這則訊息的 `data` 段，內容仍是 CBOR 編碼；不直接讀取，而是以 `msg.ToMap()` 或 `msg.ToStruct(...)` 解碼取值
 - `Source`：來源節點 ID
-- `Timestamp`：上游節點 publish 的時間，RFC3339 格式、精度到毫秒（`2026-03-22T18:30:00.123+08:00`）。它取自該節點自己的時鐘，因此除非機器跑在 UTC，否則會帶本地時區偏移（例如 `+08:00`）而不是 `Z`。上游 payload 未帶時間時為空字串——mock 注入的訊息一律如此。SDK 原封不動地傳遞這個字串，因此以舊版 SDK 發送的節點仍會帶精度到秒、沒有小數位的時間戳——用 `time.RFC3339` layout 解析即可，兩種都吃得下
+- `Timestamp`：上游節點 publish 的時間，RFC3339 格式。本版 SDK 的節點以 UTC 寫入毫秒精度，因此結尾為 `Z`（`2026-03-22T10:30:00.123Z`）。SDK 原封不動地傳遞這個字串且從不驗證，因此其形式取決於發送端：舊版 SDK 的節點寫入秒精度、不帶小數位；時鐘不在 UTC 的節點寫入本地時區偏移（例如 `+08:00`）。請以 `time.RFC3339` layout 解析，上述形式皆可接受。上游 payload 完全未帶時間時為空字串
 
 ### 讀取 Input 值
 
@@ -767,12 +768,12 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-步驟 3：SDK 在 publisher 這一側把 Go 值轉成 schema 型別後，把整則訊息編碼成 CBOR。訊息最外層有三個欄位：`source`（發送的節點）、`timestamp`（發送當下的時間，RFC3339 格式、精度到毫秒，取自容器的時鐘，因此帶本地時區偏移、未必是 `Z`）與 `data`（你 publish 的欄位）。以下以 CBOR diagnostic notation（CBOR 的人類可讀表示法）呈現——每個欄位直接帶原生值，沒有 per-field type 包裝：
+步驟 3：SDK 在 publisher 這一側把 Go 值轉成 schema 型別後，把整則訊息編碼成 CBOR。訊息最外層有三個欄位：`source`（發送的節點）、`timestamp`（發送當下的時間，RFC3339 格式、精度到毫秒，取自容器的時鐘並轉為 UTC，因此結尾一律是 `Z`）與 `data`（你 publish 的欄位）。以下以 CBOR diagnostic notation（CBOR 的人類可讀表示法）呈現——每個欄位直接帶原生值，沒有 per-field type 包裝：
 
 ```text
 {
   "source": "publisher-node",
-  "timestamp": "2026-03-22T18:30:00.123+08:00",
+  "timestamp": "2026-03-22T10:30:00.123Z",
   "data": {
     "temperature": 25.5,
     "running": true,
@@ -785,7 +786,7 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 
 ```go
 msg := <-ctx.Messages()
-// msg.Handle == "input1"、msg.Source == "publisher-node"、msg.Timestamp == "2026-03-22T18:30:00.123+08:00"
+// msg.Handle == "input1"、msg.Source == "publisher-node"、msg.Timestamp == "2026-03-22T10:30:00.123Z"
 
 data := msg.ToMap()
 // data == map[string]any{
@@ -876,7 +877,7 @@ func main() {
 - 訊息每個 tick 注入一則，從清單頭開始輪替；app 啟動後約半秒開始。要同時測多個 input，就每個 input 各列一則訊息，讓它們輪流注入。
 - `messageInterval` 是 Go duration 字串，例如 `"3s"`、`"500ms"`。未填、無法解析或非正值時，一律退回 3s，且不報錯。
 - 注入的值維持字串化的 `type`/`value` 形式：浮點用科學記號（`"2.55e+01"`）、`raw` 用 base64、bool 用 `"true"` / `"false"`。SDK 在注入時把每筆值轉成原生 Go 值，handler 讀到的解碼結果與正式環境一致。`type` 留空的欄位會注入成 undefined，這就是測試 `nil` 路徑的方法。
-- 注入的訊息一律帶 `Source` `"mock"`，`Timestamp` 為空字串。
+- 注入的訊息一律帶 `Source` `"mock"`，`Timestamp` 取自注入當下的本機時鐘，格式與真實 publisher 相同，是 UTC 毫秒形式。
 - 沒有真實 broker，因此 handler publish 的內容只看得到 log：`[MOCK PUBLISH]` 行會帶出 topic 與解碼後的 payload。heartbeat 也以同樣形式出現，payload 為空。呼叫 `DisableSDKLog()` 會把這些全部關掉。
 
 `neoedgex.LoadMockConfig(...)` 是 `mock.LoadConfig(...)` 的便捷入口。mock main 已 import `neoedgex/mock` 時，建議直接用 `mock.LoadConfig(...)`，讓 mock 設定的來源保持明確。
@@ -989,6 +990,8 @@ if _, err := ParseSettings(ctx.NodeConfig()); err != nil {
 ### v2.2.0 — 2026-08-13
 
 - **訊息時間戳精度到毫秒。** 最外層 `timestamp` 由整秒改為 RFC3339 帶固定三位小數（`2026-03-22T10:30:00.123Z`），因此同一秒內採樣的資料不再被寫成相同時間。欄位仍為 CBOR text string，`time.RFC3339` layout 可解析兩種形式，故仍以秒精度發送的節點雙向皆可互通。以固定長度樣式驗證時間戳、或以不允許小數的 layout 解析的 consumer 必須調整。
+- **Publish 的時間戳一律為 UTC。** 最外層 `timestamp` 以轉換為 UTC 後的時鐘格式化，因此結尾一律為 `Z`，不再帶容器的本地時區偏移。接收端行為不變：收到的 timestamp 原封交給 handler 且從不驗證，無論其時區或精度。Mock 模式與 `testutil` 比照 publish 形式——mock 注入的訊息帶 UTC 毫秒時間戳，不再是空字串；`testutil` 的預設訊息時間戳由 `"2026-01-01T00:00:00Z"` 改為 `"2026-01-01T00:00:00.000Z"`。假設帶本地偏移的 consumer，以及對上述任一字面值做精確比對的測試，必須調整。
+- **新增 `contract.PublishTimestampLayout`。** publish 端的時間戳 layout（`2006-01-02T15:04:05.000Z07:00`）改為公開，使在本 SDK 之外組出 NeoFlow envelope 的元件能以同一常數格式化，不必複製字面值。它僅描述 publish 端；收到的 timestamp 從不以此驗證。
 
 ### v2.1.0 — 2026-08-03
 

@@ -18,7 +18,7 @@ The SDK also handles node lifecycle, message transport, heartbeats, error report
 Third-party applications may depend on these packages:
 
 - `neoedgex` — the app entry point, the handler interface, and the types a handler works with
-- `neoedgex/contract` — the schema types: `DataType` with its `Type*` constants, `PortFieldSchema`, `NodeData`
+- `neoedgex/contract` — the schema types: `DataType` with its `Type*` constants, `PortFieldSchema`, `NodeData`; and the wire formats a publisher has to reproduce, currently `PublishTimestampLayout`
 - `neoedgex/mock` — the configuration format for local mock runs
 - `neoedgex/testutil` — a `NodeEnv` double and a message builder, for unit tests; a production entrypoint has no reason to import it
 
@@ -39,6 +39,7 @@ These are the entry points documented by this guide:
 - `neoedgex.ErrorCode`
 - `contract.DataType` and the `Type*` constants
 - `contract.PortFieldSchema`, `contract.NodeData`
+- `contract.PublishTimestampLayout`
 - `mock.LoadConfig(...)`
 - `testutil.MockNodeEnv`, with `NewMessage(...)` and `Deliver(...)`
 - `testutil.NewMessage(...)`, `testutil.Fields`, `testutil.Field`, `testutil.Undeclared`
@@ -350,7 +351,7 @@ Each handler receives a `neoedgex.NodeEnv`.
 - `Handle`: which input handle triggered this message
 - `Data`: a `RawMessage` holding the `data` section of the received message exactly as it arrived, still CBOR-encoded; you do not read it directly — decode it with `msg.ToMap()` or `msg.ToStruct(...)`
 - `Source`: source node ID
-- `Timestamp`: the time the upstream node published, in RFC3339 format with millisecond precision (`2026-03-22T18:30:00.123+08:00`). It is written from that node's own clock, so expect a local offset such as `+08:00` rather than `Z` unless the machine runs on UTC. It is an empty string when the upstream payload carries no time, which is the case for every mock-injected message. The SDK passes the string through untouched, so a node publishing from an older SDK still arrives with a second-precision stamp and no fraction — parse it with the `time.RFC3339` layout, which accepts both
+- `Timestamp`: the time the upstream node published, in RFC3339 format. A node on this SDK version writes millisecond precision in UTC, so its stamp ends in `Z` (`2026-03-22T10:30:00.123Z`). The SDK passes the string through untouched and never validates it, so the form is whatever the sender wrote: a node on an older SDK writes second precision with no fraction, and a node whose clock is not UTC writes a local offset such as `+08:00`. Parse it with the `time.RFC3339` layout, which accepts all of these. It is an empty string when the upstream payload carries no time at all
 
 ### Reading Input Values
 
@@ -769,12 +770,12 @@ func (app *ExampleApp) Handle(ctx neoedgex.NodeEnv) {
 }
 ```
 
-Step 3: on the publisher side, the SDK converts those Go values to the schema types and encodes the whole message as CBOR. The message has three top-level fields: `source` (the publishing node), `timestamp` (the moment of publication, in RFC3339 with millisecond precision, taken from the container's clock — so it carries the local UTC offset, not necessarily `Z`), and `data` (your published fields). Shown here in CBOR diagnostic notation, the human-readable rendering of CBOR — each field carries its native value, with no per-field type wrapper:
+Step 3: on the publisher side, the SDK converts those Go values to the schema types and encodes the whole message as CBOR. The message has three top-level fields: `source` (the publishing node), `timestamp` (the moment of publication, in RFC3339 with millisecond precision, taken from the container's clock and converted to UTC — so it always ends in `Z`), and `data` (your published fields). Shown here in CBOR diagnostic notation, the human-readable rendering of CBOR — each field carries its native value, with no per-field type wrapper:
 
 ```text
 {
   "source": "publisher-node",
-  "timestamp": "2026-03-22T18:30:00.123+08:00",
+  "timestamp": "2026-03-22T10:30:00.123Z",
   "data": {
     "temperature": 25.5,
     "running": true,
@@ -787,7 +788,7 @@ Step 4: when a downstream node receives that payload on its own `input1`, the ha
 
 ```go
 msg := <-ctx.Messages()
-// msg.Handle == "input1", msg.Source == "publisher-node", msg.Timestamp == "2026-03-22T18:30:00.123+08:00"
+// msg.Handle == "input1", msg.Source == "publisher-node", msg.Timestamp == "2026-03-22T10:30:00.123Z"
 
 data := msg.ToMap()
 // data == map[string]any{
@@ -878,7 +879,7 @@ What that file has to get right:
 - messages are injected one per tick, cycling through the list from the top and starting about half a second after the app comes up. To exercise several inputs, list one message per input and let them rotate.
 - `messageInterval` is a Go duration string such as `"3s"` or `"500ms"`. Missing, unparseable, or not positive falls back to 3s, with no error.
 - injected values keep the stringified `type`/`value` form: floats in scientific notation (`"2.55e+01"`), `raw` as base64, bool as `"true"` / `"false"`. The SDK converts each entry to its native Go value at injection time, so the handler sees the same decoded values as in production. An entry with an empty `type` injects an undefined field, which is how you exercise the `nil` path.
-- every injected message arrives with `Source` `"mock"` and an empty `Timestamp`.
+- every injected message arrives with `Source` `"mock"` and a `Timestamp` taken from the local clock at injection time, in the same UTC millisecond form a real publisher writes.
 - there is no broker, so what your handler publishes is visible only in the log, as `[MOCK PUBLISH]` lines carrying the topic and the decoded payload. Heartbeats appear the same way, with an empty payload. `DisableSDKLog()` hides all of it.
 
 `neoedgex.LoadMockConfig(...)` is a convenience wrapper around `mock.LoadConfig(...)`. If your mock main already imports `neoedgex/mock`, prefer keeping `mock.LoadConfig(...)` so the mock configuration source stays explicit.
@@ -991,6 +992,8 @@ This SDK follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Mos
 ### v2.2.0 — 2026-08-13
 
 - **Millisecond message timestamps.** The envelope `timestamp` is RFC3339 with a fixed three-digit fraction (`2026-03-22T10:30:00.123Z`) instead of whole seconds, so samples taken within the same second are no longer written as the same time. The field remains a CBOR text string and the `time.RFC3339` layout parses both forms, so a node still publishing second-precision stamps interoperates in both directions. Consumers that validate the stamp against a fixed-length pattern, or parse it with a layout that forbids a fraction, must be updated.
+- **Publish timestamps are always UTC.** The envelope `timestamp` is formatted from the clock converted to UTC and therefore always ends in `Z`, instead of carrying the container's local offset. Receiving is unchanged: an inbound timestamp is delivered to the handler verbatim and never validated, whatever zone or precision it carries. Mock mode and `testutil` follow the publish form — a mock-injected message carries a UTC millisecond stamp instead of an empty string, and `testutil`'s default message timestamp is now `"2026-01-01T00:00:00.000Z"` rather than `"2026-01-01T00:00:00Z"`. Consumers that assume a local offset, and tests that compare either literal exactly, must be updated.
+- **Added `contract.PublishTimestampLayout`.** The publish-side timestamp layout (`2006-01-02T15:04:05.000Z07:00`) is exported, so a component that builds a NeoFlow envelope outside this SDK can format with the same constant instead of copying the literal. It describes the publish side only; inbound timestamps are never validated against it.
 
 ### v2.1.0 — 2026-08-03
 

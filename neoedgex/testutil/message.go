@@ -16,7 +16,7 @@ import (
 // stay reproducible.
 const (
 	messageSource    = "upstream-node"
-	messageTimestamp = "2026-01-01T00:00:00Z"
+	messageTimestamp = "2026-01-01T00:00:00.000Z"
 )
 
 // Undeclared is the Field type for a key that travels on the wire without the
@@ -86,7 +86,8 @@ func WithLogger(nodeLogger contract.Logger) MessageOption {
 // with Undeclared, which puts that one key on the bypass path deliberately.
 //
 // The envelope carries source "upstream-node" and timestamp
-// "2026-01-01T00:00:00Z". Both are plain exported fields of the result, so a
+// "2026-01-01T00:00:00.000Z", the UTC millisecond form a node on this SDK
+// version publishes. Both are plain exported fields of the result, so a
 // handler that reads them can still be fed anything: assign msg.Source or
 // msg.Timestamp after building.
 //

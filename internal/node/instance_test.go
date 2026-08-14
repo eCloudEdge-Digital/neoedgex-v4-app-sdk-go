@@ -183,10 +183,13 @@ func TestPublishSendsCBOREnvelopeWithSchemaTypedValues(t *testing.T) {
 	}
 }
 
-// millisecondTimestamp matches RFC3339 with exactly three fractional digits:
-// the shape a fixed-width layout guarantees even when the clock lands on a
-// whole second.
-var millisecondTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2})$`)
+// utcMillisecondTimestamp is the shape publish output must always have: RFC3339
+// with exactly three fractional digits and the zone pinned to UTC. The zone is
+// part of the pattern because the layout alone does not guarantee it — it
+// renders a numeric offset for a non-UTC time, so only Publish's own conversion
+// produces the "Z". The layout's own rendering rules are pinned on the exported
+// constant in the contract package.
+var utcMillisecondTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
 
 // secondsOf returns the whole-second prefix of an RFC3339 timestamp, the part
 // two stamps share when only their fraction differs.
@@ -219,32 +222,26 @@ func timestampPublisher(t *testing.T) func(*testing.T) string {
 	}
 }
 
-// The layout is asserted directly, because the clock-driven tests below cannot
-// choose which instant they observe: the whole-second case is where
-// time.RFC3339Nano would silently drop the fraction and hand consumers a
-// variable-width string.
-func TestPublishTimestampLayoutKeepsFixedWidthFraction(t *testing.T) {
-	zone := time.FixedZone("CST", 8*3600)
-	for _, testCase := range []struct {
-		name string
-		when time.Time
-		want string
-	}{
-		{"whole second still carries a fraction", time.Date(2026, 3, 22, 18, 30, 0, 0, zone), "2026-03-22T18:30:00.000+08:00"},
-		{"millisecond", time.Date(2026, 3, 22, 18, 30, 0, 123000000, zone), "2026-03-22T18:30:00.123+08:00"},
-		{"leading zeros in the fraction are kept", time.Date(2026, 3, 22, 10, 30, 0, 5000000, time.UTC), "2026-03-22T10:30:00.005Z"},
-		{"sub-millisecond truncates, never rounds up", time.Date(2026, 3, 22, 18, 30, 0, 999999999, zone), "2026-03-22T18:30:00.999+08:00"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			got := testCase.when.Format(publishTimestampLayout)
-			if got != testCase.want {
-				t.Fatalf("Format(publishTimestampLayout) = %q, want %q", got, testCase.want)
-			}
-			if !millisecondTimestamp.MatchString(got) {
-				t.Fatalf("timestamp %q is not RFC3339 with a three-digit fraction", got)
-			}
-		})
-	}
+// useFixedLocalZone points the process's local zone at zone for the duration of
+// the test and restores it afterwards. It is what lets an assertion on publish
+// output distinguish UTC forcing from an inherited zone: on a host that is
+// already UTC — the default in a CI container with TZ unset — an unforced
+// time.Now().Format(...) also ends in "Z", so the assertion would be decided by
+// the machine rather than by the code under test.
+//
+// Assigning the variable is the only override that takes effect mid-process:
+// time.Local is resolved from TZ once per process and cached, so a
+// t.Setenv("TZ", ...) here changes nothing Publish observes and would assert
+// against a zone that was never in effect. time.Now() reads time.Local on every
+// call, so an assignment is picked up immediately.
+//
+// The write is global, so it is sound only while this package's tests stay
+// sequential; no test here calls t.Parallel().
+func useFixedLocalZone(t *testing.T, zone *time.Location) {
+	t.Helper()
+	original := time.Local
+	time.Local = zone
+	t.Cleanup(func() { time.Local = original })
 }
 
 func TestPublishTimestampHasMillisecondPrecision(t *testing.T) {
@@ -254,8 +251,8 @@ func TestPublishTimestampHasMillisecondPrecision(t *testing.T) {
 	timestamp := publish(t)
 	after := time.Now()
 
-	if !millisecondTimestamp.MatchString(timestamp) {
-		t.Fatalf("published timestamp %q is not RFC3339 with a three-digit fraction", timestamp)
+	if !utcMillisecondTimestamp.MatchString(timestamp) {
+		t.Fatalf("published timestamp %q is not UTC RFC3339 with a three-digit fraction", timestamp)
 	}
 
 	// A hardcoded ".000" would satisfy the shape check, so the stamp is also
@@ -268,6 +265,42 @@ func TestPublishTimestampHasMillisecondPrecision(t *testing.T) {
 	if published.Before(before.Truncate(time.Millisecond)) || published.After(after) {
 		t.Fatalf("published timestamp %q is outside the publish window [%s, %s]",
 			timestamp, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
+}
+
+// UTC forcing is pinned by running the publish path on a host that is
+// deliberately NOT on UTC: the local zone is moved eight hours east for the
+// duration of the test, so an unforced stamp would render "+08:00" and only
+// Publish's own conversion can produce the "Z" asserted here. Every assertion
+// below reads production output — a check the test body could satisfy by
+// calling .UTC() itself would keep passing with the conversion deleted from
+// Publish.
+func TestPublishForcesUTCTimestamp(t *testing.T) {
+	useFixedLocalZone(t, time.FixedZone("CST", 8*3600))
+	publish := timestampPublisher(t)
+
+	// The override is load-bearing, so it is verified in place: should
+	// time.Now() ever stop reading time.Local per call, this fails loudly
+	// instead of silently turning the assertions below back into host-dependent
+	// ones.
+	unforced := time.Now().Format(contract.PublishTimestampLayout)
+	if !strings.HasSuffix(unforced, "+08:00") {
+		t.Fatalf("local zone override did not take effect: an unforced stamp reads %q, want a +08:00 offset", unforced)
+	}
+
+	timestamp := publish(t)
+	if !utcMillisecondTimestamp.MatchString(timestamp) {
+		t.Fatalf("published timestamp %q must terminate in Z whatever zone the machine runs on", timestamp)
+	}
+
+	// Forcing UTC has to move the clock reading, not relabel the wall time: a
+	// machine eight hours ahead publishes 10:30Z for its local 18:30, so the
+	// published digits must not be the local ones with the offset swapped for a
+	// "Z". Compared on the whole-second prefix, an eight-hour difference is
+	// unmistakable however long the publish took.
+	if secondsOf(timestamp) == secondsOf(unforced) {
+		t.Fatalf("published timestamp %q carries the local wall-clock reading %q; the zone was relabelled, not converted",
+			timestamp, unforced)
 	}
 }
 
@@ -339,6 +372,9 @@ func TestPublishKeepsTimestampWireCompatible(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, legacy.Timestamp); err != nil {
 		t.Fatalf("timestamp %q does not parse with the plain RFC3339 layout: %v", legacy.Timestamp, err)
+	}
+	if !strings.HasSuffix(legacy.Timestamp, "Z") {
+		t.Fatalf("timestamp %q does not end in Z; the publish side must stamp in UTC", legacy.Timestamp)
 	}
 	if legacy.SourceNodeID != "node-1" || len(legacy.Data) == 0 {
 		t.Fatalf("envelope decoded incompletely: %+v", legacy)

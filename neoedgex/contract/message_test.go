@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 )
@@ -132,6 +133,49 @@ func keysOf(m map[string]cbor.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestPublishTimestampLayoutRendersFixedWidthFraction pins the literal value of
+// the exported layout in the package that owns it: a component building an
+// envelope outside the SDK formats with this constant, so editing it edits the
+// wire contract. The whole-second case is what separates it from
+// time.RFC3339Nano, which drops the fraction there and hands consumers a
+// variable-width string.
+func TestPublishTimestampLayoutRendersFixedWidthFraction(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		when time.Time
+		want string
+	}{
+		{"whole second still carries a three-digit fraction", time.Date(2026, 3, 22, 10, 30, 0, 0, time.UTC), "2026-03-22T10:30:00.000Z"},
+		{"millisecond", time.Date(2026, 3, 22, 10, 30, 0, 123000000, time.UTC), "2026-03-22T10:30:00.123Z"},
+		// A fixed-width fraction is also a zero-padded one: 5ms has to read
+		// ".005", never ".5" or ".05".
+		{"leading zeros in the fraction are kept", time.Date(2026, 3, 22, 10, 30, 0, 5000000, time.UTC), "2026-03-22T10:30:00.005Z"},
+		{"sub-millisecond truncates, never rounds up", time.Date(2026, 3, 22, 10, 30, 0, 999999999, time.UTC), "2026-03-22T10:30:00.999Z"},
+		// The layout carries the zone of the time it is given, which is why the
+		// publish side has to convert to UTC rather than rely on the layout to
+		// produce the documented "Z".
+		{"a non-UTC time renders its numeric offset", time.Date(2026, 3, 22, 18, 30, 0, 123000000, time.FixedZone("CST", 8*3600)), "2026-03-22T18:30:00.123+08:00"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := testCase.when.Format(PublishTimestampLayout)
+			if got != testCase.want {
+				t.Fatalf("Format(PublishTimestampLayout) = %q, want %q", got, testCase.want)
+			}
+			// The documented compatibility promise in both directions: a stamp
+			// written with this layout is readable by a consumer parsing the
+			// plain time.RFC3339 layout.
+			parsed, err := time.Parse(time.RFC3339, got)
+			if err != nil {
+				t.Fatalf("stamp %q does not parse with time.RFC3339: %v", got, err)
+			}
+			if !parsed.Equal(testCase.when.Truncate(time.Millisecond)) {
+				t.Fatalf("stamp %q parses back to %s, want the millisecond-truncated original %s",
+					got, parsed.Format(time.RFC3339Nano), testCase.when.Truncate(time.Millisecond).Format(time.RFC3339Nano))
+			}
+		})
+	}
 }
 
 // TestMessageToMapSchemaTypedAllScalars pins the schema-typed decode for the

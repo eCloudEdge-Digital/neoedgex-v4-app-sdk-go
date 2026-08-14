@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -102,6 +103,7 @@ func (m *mockMessenger) injectNeoFlowMessage(nodeID, handle string, data map[str
 
 	msg := contract.NeoFlowMessage{
 		SourceNodeID: "mock",
+		Timestamp:    time.Now().UTC().Format(contract.PublishTimestampLayout),
 		Data:         dataBytes,
 	}
 	msgBytes, err := cbor.Marshal(msg)

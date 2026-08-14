@@ -17,6 +17,26 @@ type NeoFlowMessage struct {
 	Data         cbor.RawMessage `cbor:"data"`
 }
 
+// PublishTimestampLayout is the time layout a NeoFlowMessage.Timestamp is
+// written with on the publish side: RFC3339 with a fixed three-digit fraction.
+// Tags are polled on millisecond intervals, so a second-precision stamp
+// collapses every sample taken within the same second into one
+// indistinguishable time. The SDK formats a UTC time with it, so a published
+// stamp always ends in "Z"; a component that builds an envelope outside the
+// SDK should do the same.
+//
+// The fraction is fixed-width on purpose: time.RFC3339Nano trims trailing
+// zeros and drops the fraction entirely on a whole second, which would hand
+// consumers a variable-length string. Fixed width also keeps the format
+// backward compatible in both directions, because time.RFC3339 parses both a
+// stamp written this way and a second-precision one from an older publisher.
+//
+// It describes the publish side only. An inbound timestamp is delivered to the
+// handler verbatim and is NEVER validated against this layout, so a message
+// from an older or non-SDK publisher may carry any RFC3339 form — including a
+// numeric zone offset or a different fractional width.
+const PublishTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
 // RawMessage is the undecoded data section of a NeoFlow message: bytes holding
 // a CBOR map of field key to field value. Message.ToMap and Message.ToStruct
 // decode it against the receiving node's input schema; a handler that wants
@@ -40,11 +60,12 @@ type Message struct {
 	// Source is the publishing node's ID.
 	Source string
 	// Timestamp is the publish time in RFC3339 form, delivered exactly as the
-	// upstream node wrote it. A node on this SDK version stamps it to
-	// millisecond precision ("2026-03-22T18:30:00.123+08:00"); one on an older
-	// version stamps whole seconds and carries no fraction, so parse with the
-	// time.RFC3339 layout, which accepts both. Mock-injected messages carry no
-	// time, so it is empty there.
+	// upstream node wrote it and never validated. A node on this SDK version
+	// stamps it in UTC to millisecond precision ("2026-03-22T10:30:00.123Z");
+	// one on an older version stamps whole seconds in its own local zone
+	// ("2026-03-22T18:30:00+08:00"), so parse with the time.RFC3339 layout,
+	// which accepts both. It is empty when the inbound envelope carries no
+	// timestamp field at all.
 	Timestamp string
 	// Handle is the input port the message arrived on. It selects the input
 	// schema the accessors decode Data with.
