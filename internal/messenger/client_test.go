@@ -124,3 +124,33 @@ func TestAddSubscriberReturnsExistingChannelForSameNodeID(t *testing.T) {
 		t.Fatal("expected AddSubscriber to return existing channel for same node ID")
 	}
 }
+
+func TestNewMessengerFallsBackPerFieldToDefaultBroker(t *testing.T) {
+	tests := []struct {
+		name       string
+		broker     string
+		port       int
+		wantBroker string
+		wantPort   int
+	}{
+		{name: "both given", broker: "127.0.0.1", port: 55002, wantBroker: "127.0.0.1", wantPort: 55002},
+		{name: "neither given", wantBroker: "neoedgex-messenger", wantPort: 1883},
+		{name: "broker only", broker: "127.0.0.1", wantBroker: "127.0.0.1", wantPort: 1883},
+		{name: "port only", port: 55002, wantBroker: "neoedgex-messenger", wantPort: 55002},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewMessenger(stubSDK{ctx: context.Background()}, &core.MessengerOptions{
+				Config: &core.MessengerConfig{},
+				Broker: tt.broker,
+				Port:   tt.port,
+			})
+
+			if client.options.Broker != tt.wantBroker || client.options.Port != tt.wantPort {
+				t.Fatalf("resolved %s:%d, want %s:%d",
+					client.options.Broker, client.options.Port, tt.wantBroker, tt.wantPort)
+			}
+		})
+	}
+}

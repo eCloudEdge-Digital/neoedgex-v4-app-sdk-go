@@ -25,4 +25,7 @@ type RawMessengerPayload struct {
 type MessengerConfig struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Host and Port are written by the agent only for host-network apps; zero values keep the defaults.
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }

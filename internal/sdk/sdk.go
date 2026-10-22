@@ -17,10 +17,9 @@ import (
 	"github.com/eCloudEdge-Digital/neoedgex-v4-app-sdk-go/v2/neoedgex/mock"
 )
 
-// mountPath is the container mount root written by the platform, not an SDK choice:
-// the platform provides config/config.json (node configs) and config/messenger.json
-// (MQTT credentials) underneath it.
-const mountPath = "/opt/neoedgex"
+// mountPath is the platform-written container mount root holding config/config.json and
+// config/messenger.json; a var only so tests can point initialize at a temp dir.
+var mountPath = "/opt/neoedgex"
 
 type sdk struct {
 	nodeConfigs []contract.Node
@@ -207,6 +206,8 @@ func (s *sdk) initialize() error {
 	if err = json.Unmarshal(rawMessengerConfig, messengerOption.Config); err != nil {
 		return fmt.Errorf("failed to unmarshal messenger config file: %v", err)
 	}
+	messengerOption.Broker = messengerOption.Config.Host
+	messengerOption.Port = messengerOption.Config.Port
 	s.messenger = messenger.NewMessenger(s, messengerOption)
 
 	return nil
